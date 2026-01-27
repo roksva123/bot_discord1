@@ -1,5 +1,6 @@
 import asyncpg
 import datetime
+import ssl
 
 class DatabaseManager:
     def __init__(self, dsn: str):
@@ -13,14 +14,38 @@ class DatabaseManager:
     async def connect(self):
         """Membuat connection pool."""
         if not self._pool:
-            self._pool = await asyncpg.create_pool(dsn=self.dsn, command_timeout=60, statement_cache_size=0)
-            print("Berhasil terhubung ke database PostgreSQL.")
+            try:
+                # Buat SSL Context manual untuk mengatasi masalah timeout di Windows
+                ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                ssl_ctx.check_hostname = False
+                ssl_ctx.verify_mode = ssl.CERT_NONE
+
+                self._pool = await asyncpg.create_pool(
+                    dsn=self.dsn,
+                    command_timeout=60,
+                    statement_cache_size=0,
+                    ssl=ssl_ctx
+                )
+                print("✅ Berhasil terhubung ke database PostgreSQL.")
+            except asyncpg.exceptions.InternalServerError as e:
+                print("❌ FATAL: Gagal membuat koneksi pool ke database.")
+                if "Tenant or user not found" in str(e):
+                    print("\n--- ANALISIS KESALAHAN KONEKSI SUPABASE ---")
+                    print("Error 'Tenant or user not found' mengindikasikan ada kesalahan pada variabel 'DATABASE_URL' di file .env Anda.")
+                    print("Pastikan detail berikut sudah benar:")
+                    print(" - Hostname (bagian ...pooler.supabase.com), Username, Password, dan Port.")
+                    print(" - Pastikan juga proyek Supabase Anda tidak sedang di-pause.")
+                    print("\nBot tidak dapat dimulai tanpa koneksi database yang valid. Harap perbaiki .env dan restart bot.")
+                raise  # Hentikan eksekusi bot
+            except Exception as e:
+                print(f"❌ FATAL: Terjadi error tak terduga saat menghubungkan ke database: {e}")
+                raise
 
     async def close(self):
         """Menutup connection pool."""
         if self._pool:
             await self._pool.close()
-            print("Koneksi ke database PostgreSQL ditutup.")
+            print("🔌 Koneksi ke database PostgreSQL ditutup.")
 
     async def init_db(self):
         """Membuat dan memodifikasi tabel jika diperlukan."""
@@ -42,7 +67,7 @@ class DatabaseManager:
             await connection.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS reputation INT DEFAULT 0;")
             await connection.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS last_rep_time TIMESTAMPTZ;")
             await connection.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS last_xp_time TIMESTAMPTZ;")
-            print("Tabel 'economy' siap digunakan.")
+            print("🛠️  Tabel 'economy' siap digunakan.")
 
     async def get_user_data(self, user_id: int):
         """

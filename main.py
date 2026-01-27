@@ -12,7 +12,7 @@ from database import DatabaseManager
 from keep_alive import keep_alive
 
 # --- Konfigurasi & Variabel Global ---
-load_dotenv()
+load_dotenv(override=True)
 TOKEN = os.getenv('DISCORD_TOKEN')
 DATABASE_URL = os.getenv('DATABASE_URL')
 try:
@@ -505,7 +505,7 @@ async def risk_tower(interaction: discord.Interaction, taruhan: app_commands.Ran
     if user_data['coins'] < taruhan:
         await interaction.response.send_message("❌ Koinmu tidak cukup untuk taruhan ini!", ephemeral=True)
         return
-
+ 
     # Langsung potong taruhan
     await bot.db.update_user_balance(interaction.user.id, user_data['coins'] - taruhan)
 
@@ -606,7 +606,7 @@ async def energy_core(interaction: discord.Interaction, taruhan: app_commands.Ra
     if user_data['coins'] < taruhan:
         await interaction.response.send_message("❌ Koinmu tidak cukup untuk taruhan ini!", ephemeral=True)
         return
-
+ 
     await bot.db.update_user_balance(interaction.user.id, user_data['coins'] - taruhan)
     view = EnergyCoreView(interaction.user, taruhan)
     embed = view.create_embed("Inti energi stabil. Tekan 'Charge' untuk memulai.")
@@ -682,7 +682,7 @@ async def shadow_deal(interaction: discord.Interaction, taruhan: app_commands.Ra
     if user_data['coins'] < taruhan:
         await interaction.response.send_message("❌ Koinmu tidak cukup untuk taruhan ini!", ephemeral=True)
         return
-
+ 
     await bot.db.update_user_balance(interaction.user.id, user_data['coins'] - taruhan)
     view = ShadowDealView(interaction.user, taruhan)
     embed = discord.Embed(title="🎭 Shadow Deal", description=f"Sosok misterius muncul dari bayangan. Dia menawarimu sebuah permainan.\n\n\"Pilih satu dari tiga kartu ini,\" bisiknya. \"Nasibmu ada di tanganmu.\"\n\nKamu mempertaruhkan **{taruhan}** koin.", color=discord.Color.purple())
@@ -771,7 +771,7 @@ async def rep(interaction: discord.Interaction, user: discord.User):
     await interaction.response.send_message(f"✅ Anda telah memberikan 1 poin reputasi kepada {receiver.mention}!")
 
 if __name__ ==  "__main__":
-    keep_alive()
+    # keep_alive() # Matikan baris ini jika menjalankan di laptop/PC lokal agar tidak error socket
     if TOKEN and DATABASE_URL:
         bot.run(TOKEN)
     else:
