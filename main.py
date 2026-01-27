@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone, time
 
 # Impor kelas DatabaseManager yang kita buat
 from database import DatabaseManager
+from keep_alive import keep_alive
 
 # --- Konfigurasi & Variabel Global ---
 load_dotenv()
@@ -770,6 +771,7 @@ async def rep(interaction: discord.Interaction, user: discord.User):
     await interaction.response.send_message(f"✅ Anda telah memberikan 1 poin reputasi kepada {receiver.mention}!")
 
 if __name__ ==  "__main__":
+    keep_alive()
     if TOKEN and DATABASE_URL:
         bot.run(TOKEN)
     else:
