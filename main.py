@@ -25,14 +25,25 @@ BIRTHDAY_REWARD = 1000
 TEBAK_KATA_REWARD = 150
 MATH_BATTLE_REWARD = 100
 HIGHER_LOWER_REWARD = 300
-RPS_REWARD = 75
 
 # Konfigurasi Leveling
 XP_PER_MESSAGE_MIN = 15
 XP_PER_MESSAGE_MAX = 25
 XP_COOLDOWN_SECONDS = 60
 
-KATA_LIST = ["python", "discord", "program", "komputer", "internet", "server", "jaringan", "database", "algoritma", "variabel", "proyek", "kode"]
+KATA_LIST = [
+    # Kata-kata sehari-hari
+    "rumah", "sekolah", "komputer", "internet", "jendela", "pintu", "kursi", "meja", 
+    "buku", "pensil", "sepeda", "motor", "mobil", "hujan", "matahari", "bulan", 
+    "bintang", "keluarga", "teman", "makanan", "minuman", "bermain", "belajar", 
+    "bekerja", "tidur", "terbang", "berenang", "berjalan", "berlari", "tertawa", 
+    "menangis", "bahagia", "sedih", "marah", "takut", "kucing", "anjing", "burung", 
+    "ikan", "pohon", "bunga", "gunung", "pantai", "laut", "sungai", "danau", 
+    "jembatan", "telepon", "televisi", "radio", "musik", "film", "olahraga", 
+    "sepakbola", "basket", "badminton", "indonesia", "jakarta", "bandung", 
+    "surabaya", "medan", "makassar", "kemerdekaan", "pendidikan", "kesehatan",
+    "transportasi", "komunikasi", "teknologi", "lingkungan", "pemerintah"
+]
 
 class MyBot(commands.Bot):
     def __init__(self):
@@ -106,9 +117,22 @@ class MyBot(commands.Bot):
         if message.author.bot or not message.guild:
             return
 
-        # Proses command prefix jika ada
+        # Dapatkan konteks untuk memeriksa apakah pesan adalah command.
+        # Ini tidak menjalankan command, hanya memeriksa.
+        ctx = await self.get_context(message)
+
+        # Proses semua command (prefix commands).
+        # Ini harus dipanggil agar command prefix (!) bisa berjalan.
         await self.process_commands(message)
 
+        # Jika `ctx.valid` adalah True, berarti pesan tersebut adalah command yang valid.
+        # Kita hentikan eksekusi di sini untuk menghindari "double action",
+        # yaitu menjalankan command DAN memberikan XP. Ini juga mencegah
+        # pesan level-up muncul bersamaan dengan output command.
+        if ctx.valid:
+            return
+
+        # --- Logika Pemberian XP (hanya untuk pesan biasa, bukan command) ---
         user_id = message.author.id
         now = datetime.now(timezone.utc)
 
@@ -138,29 +162,117 @@ class MyBot(commands.Bot):
 
 bot = MyBot()
 
+# Global error handler untuk slash commands
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.errors.CommandOnCooldown):
+        await interaction.response.send_message(f"⏳ Perintah ini sedang dalam cooldown. Coba lagi dalam {error.retry_after:.2f} detik.", ephemeral=True)
+    elif isinstance(error, app_commands.errors.MissingPermissions):
+        await interaction.response.send_message("❌ Anda tidak memiliki izin yang diperlukan untuk menjalankan perintah ini.", ephemeral=True)
+    elif isinstance(error, app_commands.errors.CheckFailure):
+        # Ini akan menangkap kegagalan dari is_owner() dan cek lainnya
+        await interaction.response.send_message("❌ Anda tidak memenuhi syarat untuk menggunakan perintah ini.", ephemeral=True)
+    else:
+        # Untuk error lain, catat di konsol dan beri tahu pengguna.
+        print(f"Error tak tertangani untuk command /{interaction.command.name}: {error}")
+        # Pastikan untuk merespons interaksi agar tidak gagal
+        if not interaction.response.is_done():
+            await interaction.response.send_message("Terjadi error saat menjalankan perintah.", ephemeral=True)
+        else:
+            await interaction.followup.send("Terjadi error saat menjalankan perintah.", ephemeral=True)
+
 # --- Command Tambahan untuk Developer ---
 # Ketik '!sync' di chat untuk memunculkan command baru secara instan
 @bot.command()
 @commands.is_owner()
 async def sync(ctx):
-    # Salin semua command global ke server ini
+    # Strategi ini (clear -> copy -> sync) memastikan command tidak duplikat dan selalu fresh.
+    # Ini membuat `!sync` bisa dijalankan berkali-kali tanpa masalah.
+    
+    # 1. Hapus daftar command lama untuk server ini dari memori bot.
+    bot.tree.clear_commands(guild=ctx.guild)
+    
+    # 2. Salin semua command global yang ada di kode ke dalam daftar command untuk server ini.
     bot.tree.copy_global_to(guild=ctx.guild)
+    
+    # 3. Kirim daftar command yang baru ke Discord.
     synced = await bot.tree.sync(guild=ctx.guild)
     await ctx.send(f"✅ Berhasil sinkronisasi {len(synced)} command ke server ini! Coba ketik / sekarang.")
 
 @bot.command()
 @commands.is_owner()
 async def unsync(ctx):
-    # Menghapus command khusus dari server ini
+    # Menghapus semua command khusus dari server ini
     bot.tree.clear_commands(guild=ctx.guild)
     await bot.tree.sync(guild=ctx.guild)
-    await ctx.send("✅ Berhasil menghapus command dari server ini. Gunakan `!sync` untuk menambahkannya kembali.")
+    await ctx.send("✅ Berhasil menghapus semua command dari server ini. Gunakan `!sync` untuk menambahkannya kembali.")
 
 @bot.tree.command(name="ping", description="Mengecek latensi bot")
 async def ping(interaction: discord.Interaction):
     latency = round(bot.latency * 1000) 
 
     await interaction.response.send_message(f"Pong! 🏓 Latency: {latency}ms")
+
+@bot.tree.command(name="help", description="Tampilkan daftar semua perintah yang tersedia.")
+async def help_command(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    embed = discord.Embed(
+        title="Bantuan Perintah Bot",
+        description="Berikut adalah daftar perintah slash (/) yang bisa kamu gunakan:",
+        color=discord.Color.blurple()
+    )
+
+    # Kategori untuk pengelompokan
+    category_map = {
+        "General": "⚙️ Perintah Umum",
+        "Game": "🎲 Game",
+        "Judi": "🎰 Game Judi",
+        "Birthday": "🎂 Ulang Tahun",
+        "Sosial": "👥 Sosial & Ekonomi"
+    }
+    
+    commands_by_category = {v: [] for v in category_map.values()}
+    
+    all_commands = bot.tree.get_commands()
+
+    # Kategorikan semua perintah
+    for cmd in sorted(all_commands, key=lambda c: c.name):
+        # Handle groups
+        if isinstance(cmd, app_commands.Group):
+            if cmd.name == "game":
+                for sub_cmd in sorted(cmd.commands, key=lambda c: c.name):
+                    # Kategorikan game judi dan non-judi
+                    if sub_cmd.name in ["risktower", "energycore", "shadowdeal", "guessnumber", "slotmachine"]:
+                        commands_by_category[category_map["Judi"]].append(f"`/{cmd.name} {sub_cmd.name}`: {sub_cmd.description}")
+            elif cmd.name == "birthday":
+                for sub_cmd in sorted(cmd.commands, key=lambda c: c.name):
+                    commands_by_category[category_map["Birthday"]].append(f"`/{cmd.name} {sub_cmd.name}`: {sub_cmd.description}")
+        # Handle standalone commands
+        else:
+            if cmd.name in ["tebakkata", "mathbattle", "higherlower"]:
+                commands_by_category[category_map["Game"]].append(f"`/{cmd.name}`: {cmd.description}")
+            elif cmd.name == "rps":
+                commands_by_category[category_map["Judi"]].append(f"`/{cmd.name}`: {cmd.description}")
+            elif cmd.name in ["balance", "daily", "profile", "rep", "leaderboard"]:
+                commands_by_category[category_map["Sosial"]].append(f"`/{cmd.name}`: {cmd.description}")
+            elif cmd.name not in ["help"]: # Jangan tampilkan command help di dalam help
+                commands_by_category[category_map["General"]].append(f"`/{cmd.name}`: {cmd.description}")
+
+    # Tambahkan perintah admin secara terpisah jika pengguna adalah pemilik bot
+    if await bot.is_owner(interaction.user):
+        commands_by_category["👑 Perintah Admin"] = []
+        admin_group = discord.utils.get(all_commands, name="admin")
+        if admin_group and isinstance(admin_group, app_commands.Group):
+            for sub_cmd in sorted(admin_group.commands, key=lambda c: c.name):
+                commands_by_category["👑 Perintah Admin"].append(f"`/admin {sub_cmd.name}`: {sub_cmd.description}")
+
+    # Bangun field embed dari kategori yang sudah diisi
+    for category, command_list in commands_by_category.items():
+        if command_list:
+            embed.add_field(name=f"**{category}**", value="\n".join(command_list), inline=False)
+
+    embed.set_footer(text="Gunakan perintah dengan mengetik '/' diikuti nama perintah.")
+    await interaction.followup.send(embed=embed)
 
 # Command untuk mengecek saldo
 @bot.tree.command(name="balance", description="Cek saldo koin Anda.")
@@ -255,7 +367,7 @@ async def tebak_kata(interaction: discord.Interaction):
 
     embed = discord.Embed(
         title=" unscramble 🔡 Tebak Kata!",
-        description=f"Aku punya kata: **`{huruf_acak.upper()}`**\n\nCoba tebak kata aslinya apa? Kamu punya waktu 15 detik!",
+        description=f"Aku punya kata: **`{huruf_acak.upper()}`**\n\nCoba tebak kata aslinya apa? Kamu punya waktu 30 detik!",
         color=discord.Color.blue()
     )
     await interaction.response.send_message(embed=embed)
@@ -265,7 +377,7 @@ async def tebak_kata(interaction: discord.Interaction):
         return m.author == interaction.user and m.channel == interaction.channel
 
     try:
-        msg = await bot.wait_for('message', check=check, timeout=15.0)
+        msg = await bot.wait_for('message', check=check, timeout=30.0)
         
         if msg.content.lower() == kata_asli:
             user_data = await bot.db.get_user_data(interaction.user.id)
@@ -349,46 +461,80 @@ async def higher_lower(interaction: discord.Interaction):
     # Jika loop selesai tanpa menang
     await interaction.followup.send(f"GAME OVER! Kamu kehabisan kesempatan. Angka rahasianya adalah **{angka_rahasia}**.")
 
-# --- Game Baru: Batu Kertas Gunting ---
-class RPSView(discord.ui.View):
-    def __init__(self, author):
-        super().__init__(timeout=30)
-        self.author = author
+# --- Game Batu Kertas Gunting (PvP) ---
 
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.author.id:
-            await interaction.response.send_message("Ini bukan permainanmu!", ephemeral=True)
-            return False
-        return True
+class RPSBattleView(discord.ui.View):
+    def __init__(self, player1: discord.User, player2: discord.User, bet: int):
+        super().__init__(timeout=30.0)
+        self.player1 = player1 # Initiator
+        self.player2 = player2 # Opponent
+        self.bet = bet
+        self.choices = {player1.id: None, player2.id: None}
+        self.message: discord.WebhookMessage = None # To store the original message
 
-    async def handle_choice(self, interaction: discord.Interaction, user_choice: str):
-        bot_choice = random.choice(["batu", "kertas", "gunting"])
+    async def on_timeout(self):
+        # This method is called when the view times out.
+        p1_choice = self.choices[self.player1.id]
+        p2_choice = self.choices[self.player2.id]
         
-        # Disable semua tombol setelah dipilih
         for item in self.children:
             item.disabled = True
         
-        result_message = ""
-        win = False
-
-        if user_choice == bot_choice:
-            result_message = f"⚖️ Hasilnya **Seri**! Kalian berdua memilih **{user_choice}**."
-        elif (user_choice == "batu" and bot_choice == "gunting") or \
-             (user_choice == "kertas" and bot_choice == "batu") or \
-             (user_choice == "gunting" and bot_choice == "kertas"):
-            result_message = f"🎉 Kamu **Menang**! Kamu memilih **{user_choice}** dan bot memilih **{bot_choice}**."
-            win = True
+        if p1_choice and not p2_choice:
+            # Player 2 didn't choose, Player 1 wins by default
+            await self.end_game(self.player1, self.player2, f"Waktu habis! {self.player2.mention} tidak memilih.")
+        elif not p1_choice and p2_choice:
+            # Player 1 didn't choose, Player 2 wins by default
+            await self.end_game(self.player2, self.player1, f"Waktu habis! {self.player1.mention} tidak memilih.")
         else:
-            result_message = f"😭 Kamu **Kalah**! Kamu memilih **{user_choice}** dan bot memilih **{bot_choice}**."
+            # Both or neither chose, it's a draw, no coin transfer needed
+            await self.message.edit(content="Waktu habis! Permainan dibatalkan karena tidak ada pilihan.", view=self)
 
-        if win:
-            user_data = await bot.db.get_user_data(interaction.user.id)
-            new_balance = user_data['coins'] + RPS_REWARD
-            await bot.db.update_user_balance(interaction.user.id, new_balance)
-            result_message += f"\nKamu mendapatkan **{RPS_REWARD}** koin!"
+    async def handle_choice(self, interaction: discord.Interaction, choice: str):
+        player = interaction.user
 
-        await interaction.response.edit_message(content=result_message, view=self)
-        self.stop()
+        if player.id not in self.choices:
+            await interaction.response.send_message("Kamu tidak ada dalam permainan ini!", ephemeral=True)
+            return
+
+        if self.choices[player.id] is not None:
+            await interaction.response.send_message("Kamu sudah memilih!", ephemeral=True)
+            return
+
+        self.choices[player.id] = choice
+        await interaction.response.send_message(f"Kamu memilih **{choice}**. Menunggu lawan...", ephemeral=True)
+
+        p1_choice = self.choices[self.player1.id]
+        p2_choice = self.choices[self.player2.id]
+
+        if p1_choice and p2_choice:
+            self.stop() # Stop the timeout countdown
+            for item in self.children:
+                item.disabled = True
+
+            winner, loser = None, None
+            if (p1_choice == "batu" and p2_choice == "gunting") or \
+               (p1_choice == "kertas" and p2_choice == "batu") or \
+               (p1_choice == "gunting" and p2_choice == "kertas"):
+                winner, loser = self.player1, self.player2
+            elif p1_choice != p2_choice:
+                winner, loser = self.player2, self.player1
+
+            if winner:
+                await self.end_game(winner, loser, f"{winner.mention} memilih **{self.choices[winner.id]}** dan {loser.mention} memilih **{self.choices[loser.id]}**.")
+            else: # Draw
+                await self.message.edit(content=f"⚖️ **Seri!** Keduanya memilih **{p1_choice}**. Taruhan dikembalikan.", view=self)
+
+    async def end_game(self, winner: discord.User, loser: discord.User, reason: str):
+        # Transfer coins
+        winner_data = await bot.db.get_user_data(winner.id)
+        loser_data = await bot.db.get_user_data(loser.id)
+
+        await bot.db.update_user_balance(winner.id, winner_data['coins'] + self.bet)
+        await bot.db.update_user_balance(loser.id, loser_data['coins'] - self.bet)
+
+        final_message = f"🎉 {winner.mention} **Menang**!\n{reason}\n\n{winner.mention} memenangkan **{self.bet}** koin dari {loser.mention}!"
+        await self.message.edit(content=final_message, view=self)
 
     @discord.ui.button(label="Batu 🗿", style=discord.ButtonStyle.secondary)
     async def rock(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -402,10 +548,84 @@ class RPSView(discord.ui.View):
     async def scissors(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.handle_choice(interaction, "gunting")
 
-@bot.tree.command(name="rps", description="Main Batu Kertas Gunting melawan bot.")
-async def rps(interaction: discord.Interaction):
-    view = RPSView(interaction.user)
-    await interaction.response.send_message("Pilih gerakanmu!", view=view)
+
+class RPSChallengeView(discord.ui.View):
+    def __init__(self, initiator: discord.User, opponent: discord.User, bet: int):
+        super().__init__(timeout=60.0)
+        self.initiator = initiator
+        self.opponent = opponent
+        self.bet = bet
+        self.message: discord.WebhookMessage = None
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.opponent.id:
+            await interaction.response.send_message("Ini bukan tantangan untukmu!", ephemeral=True)
+            return False
+        return True
+    
+    async def on_timeout(self):
+        for item in self.children:
+            item.disabled = True
+        await self.message.edit(content="Tantangan tidak direspons dan telah dibatalkan.", view=self)
+
+    @discord.ui.button(label="Terima Tantangan", style=discord.ButtonStyle.success)
+    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        initiator_data = await bot.db.get_user_data(self.initiator.id)
+        opponent_data = await bot.db.get_user_data(self.opponent.id)
+
+        if initiator_data['coins'] < self.bet:
+            await interaction.response.edit_message(content=f"Gagal memulai: {self.initiator.mention} tidak punya cukup koin lagi.", view=None)
+            self.stop()
+            return
+        if opponent_data['coins'] < self.bet:
+            await interaction.response.edit_message(content=f"Gagal memulai: Kamu tidak punya cukup koin untuk taruhan ini.", view=None)
+            self.stop()
+            return
+
+        game_view = RPSBattleView(self.initiator, self.opponent, self.bet)
+        await interaction.response.edit_message(content=f"Tantangan diterima! {self.initiator.mention} dan {self.opponent.mention}, silakan pilih gerakan kalian. Waktu 30 detik!", view=game_view)
+        game_view.message = await interaction.original_response()
+        self.stop()
+
+    @discord.ui.button(label="Tolak", style=discord.ButtonStyle.danger)
+    async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.edit_message(content=f"{self.opponent.mention} menolak tantangan.", view=None)
+        self.stop()
+
+
+@bot.tree.command(name="rps", description="Tantang pemain lain untuk bermain Batu Kertas Gunting dengan taruhan.")
+@app_commands.describe(
+    lawan="Pemain yang ingin kamu tantang.",
+    taruhan="Jumlah koin yang dipertaruhkan."
+)
+async def rps(interaction: discord.Interaction, lawan: discord.User, taruhan: app_commands.Range[int, 1]):
+    initiator = interaction.user
+
+    if initiator.id == lawan.id:
+        await interaction.response.send_message("❌ Kamu tidak bisa menantang dirimu sendiri!", ephemeral=True)
+        return
+    if lawan.bot:
+        await interaction.response.send_message("❌ Kamu tidak bisa menantang bot!", ephemeral=True)
+        return
+
+    initiator_data = await bot.db.get_user_data(initiator.id)
+    if initiator_data['coins'] < taruhan:
+        await interaction.response.send_message(f"❌ Koinmu tidak cukup untuk bertaruh sebesar {taruhan} koin.", ephemeral=True)
+        return
+
+    opponent_data = await bot.db.get_user_data(lawan.id)
+    if opponent_data['coins'] < taruhan:
+        await interaction.response.send_message(f"❌ {lawan.display_name} tidak memiliki cukup koin untuk taruhan ini.", ephemeral=True)
+        return
+
+    view = RPSChallengeView(initiator, lawan, taruhan)
+    embed = discord.Embed(
+        title="⚔️ Tantangan Batu Kertas Gunting! ⚔️",
+        description=f"{initiator.mention} menantang {lawan.mention} untuk bermain dengan taruhan sebesar **{taruhan}** koin!",
+        color=discord.Color.orange()
+    )
+    await interaction.response.send_message(content=f"Hei {lawan.mention}!", embed=embed, view=view)
+    view.message = await interaction.original_response()
 
 # --- Mini Game Judi-Style ---
 
@@ -461,7 +681,11 @@ class RiskTowerView(discord.ui.View):
         for item in self.children:
             item.disabled = True
         embed = self.create_embed(message, is_game_over=True)
-        await interaction.response.edit_message(embed=embed, view=self)
+        # Cek apakah interaksi sudah direspons sebelumnya untuk menghindari error
+        if interaction.response.is_done():
+            await interaction.edit_original_response(embed=embed, view=self)
+        else:
+            await interaction.response.edit_message(embed=embed, view=self)
         self.stop()
 
     @discord.ui.button(label="Climb Higher", style=discord.ButtonStyle.primary, emoji="🧗")
@@ -688,7 +912,480 @@ async def shadow_deal(interaction: discord.Interaction, taruhan: app_commands.Ra
     embed = discord.Embed(title="🎭 Shadow Deal", description=f"Sosok misterius muncul dari bayangan. Dia menawarimu sebuah permainan.\n\n\"Pilih satu dari tiga kartu ini,\" bisiknya. \"Nasibmu ada di tanganmu.\"\n\nKamu mempertaruhkan **{taruhan}** koin.", color=discord.Color.purple())
     await interaction.response.send_message(embed=embed, view=view)
 
+
+### GAME 5: UNO (MULTIPLAYER)
+
+class UnoCard:
+    def __init__(self, color, value, card_type):
+        self.color = color # red, green, blue, yellow, wild
+        self.value = value # 0-9, None
+        self.type = card_type # number, skip, reverse, draw2, wild, wild4
+
+    def __repr__(self):
+        color_map = {'red': '🟥', 'green': '🟩', 'blue': '🟦', 'yellow': '🟨', 'wild': '🌈'}
+        type_map = {'skip': '🚫', 'reverse': '🔁', 'draw2': '⏫ +2', 'wild': 'Wild', 'wild4': '🍀 +4'}
+        
+        prefix = color_map.get(self.color, '')
+        name = str(self.value) if self.type == 'number' else type_map.get(self.type, self.type)
+        return f"{prefix} {name}"
+
+class UnoGame:
+    def __init__(self):
+        self.deck = []
+        self.discard_pile = []
+        self.players = [] # List of discord.User
+        self.hands = {} # {user_id: [UnoCard]}
+        self.turn_index = 0
+        self.direction = 1 # 1 or -1
+        self.is_active = False
+        self.bet = 0
+        self.pot = 0
+        self.winner = None
+
+    def create_deck(self):
+        colors = ['red', 'green', 'blue', 'yellow']
+        self.deck = []
+        for color in colors:
+            self.deck.append(UnoCard(color, 0, 'number'))
+            for i in range(1, 10):
+                self.deck.extend([UnoCard(color, i, 'number')] * 2)
+            self.deck.extend([UnoCard(color, None, 'skip')] * 2)
+            self.deck.extend([UnoCard(color, None, 'reverse')] * 2)
+            self.deck.extend([UnoCard(color, None, 'draw2')] * 2)
+        
+        for _ in range(4):
+            self.deck.append(UnoCard('wild', None, 'wild'))
+            self.deck.append(UnoCard('wild', None, 'wild4'))
+        
+        random.shuffle(self.deck)
+
+    def draw_card(self, count=1):
+        drawn = []
+        for _ in range(count):
+            if not self.deck:
+                if not self.discard_pile:
+                    break # No cards left
+                # Reshuffle discard into deck (keep top card)
+                top_card = self.discard_pile.pop()
+                self.deck = self.discard_pile
+                self.discard_pile = [top_card]
+                random.shuffle(self.deck)
+            
+            if self.deck:
+                drawn.append(self.deck.pop())
+        return drawn
+
+    def can_play(self, card, top_card):
+        if card.color == 'wild': return True
+        if card.color == top_card.color: return True
+        if card.type == 'number' and card.value == top_card.value: return True
+        if card.type != 'number' and card.type == top_card.type: return True
+        return False
+
+    def next_turn(self):
+        self.turn_index = (self.turn_index + self.direction) % len(self.players)
+
+class UnoPlayView(discord.ui.View):
+    def __init__(self, game: UnoGame, main_view):
+        super().__init__(timeout=60)
+        self.game = game
+        self.main_view = main_view
+        self.selected_card_index = None
+
+        # Setup Select Menu for cards
+        current_player = game.players[game.turn_index]
+        hand = game.hands[current_player.id]
+        top_card = game.discard_pile[-1]
+        
+        options = []
+        playable_indices = []
+        
+        for i, card in enumerate(hand):
+            if game.can_play(card, top_card):
+                label = str(card)
+                # Handle duplicate display names in select menu
+                options.append(discord.SelectOption(label=label, value=str(i), description=f"Kartu ke-{i+1}"))
+                playable_indices.append(i)
+        
+        # Batasi opsi max 25 (limit Discord)
+        if len(options) > 25:
+            options = options[:25]
+
+        if options:
+            select = discord.ui.Select(placeholder="Pilih kartu untuk dimainkan...", options=options)
+            select.callback = self.play_card_callback
+            self.add_item(select)
+        else:
+            self.add_item(discord.ui.Button(label="Tidak ada kartu yang bisa dimainkan", disabled=True, style=discord.ButtonStyle.secondary))
+
+    async def play_card_callback(self, interaction: discord.Interaction):
+        index = int(interaction.data['values'][0])
+        card = self.game.hands[interaction.user.id][index]
+
+        if card.color == 'wild':
+            # Jika Wild, tanya warna
+            self.selected_card_index = index
+            await interaction.response.edit_message(content="Pilih warna untuk kartu Wild:", view=UnoColorView(self.game, self.main_view, index))
+        else:
+            await self.main_view.process_move(interaction, index)
+
+    @discord.ui.button(label="Ambil Kartu (Draw)", style=discord.ButtonStyle.secondary, emoji="🃏")
+    async def draw_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.main_view.process_draw(interaction)
+
+class UnoColorView(discord.ui.View):
+    def __init__(self, game, main_view, card_index):
+        super().__init__(timeout=60)
+        self.game = game
+        self.main_view = main_view
+        self.card_index = card_index
+
+    async def set_color(self, interaction: discord.Interaction, color: str):
+        await self.main_view.process_move(interaction, self.card_index, chosen_color=color)
+
+    @discord.ui.button(label="Merah", style=discord.ButtonStyle.danger)
+    async def red(self, interaction: discord.Interaction, button: discord.ui.Button): await self.set_color(interaction, 'red')
+    @discord.ui.button(label="Hijau", style=discord.ButtonStyle.success)
+    async def green(self, interaction: discord.Interaction, button: discord.ui.Button): await self.set_color(interaction, 'green')
+    @discord.ui.button(label="Biru", style=discord.ButtonStyle.primary)
+    async def blue(self, interaction: discord.Interaction, button: discord.ui.Button): await self.set_color(interaction, 'blue')
+    @discord.ui.button(label="Kuning", style=discord.ButtonStyle.secondary) # Discord gak punya kuning, pakai secondary/grey
+    async def yellow(self, interaction: discord.Interaction, button: discord.ui.Button): await self.set_color(interaction, 'yellow')
+
+class UnoGameView(discord.ui.View):
+    def __init__(self, game: UnoGame):
+        super().__init__(timeout=600) # 10 menit timeout game
+        self.game = game
+        self.message = None
+
+    def update_embed(self):
+        top_card = self.game.discard_pile[-1]
+        current_player = self.game.players[self.game.turn_index]
+        
+        desc = f"**Giliran:** {current_player.mention}\n"
+        desc += f"**Arah:** {'🔄 Searah Jarum Jam' if self.game.direction == 1 else '🔄 Berlawanan Arah'}\n"
+        desc += f"**Pot:** {self.game.pot} koin\n\n"
+        desc += f"**Kartu Atas:**\n# {top_card}\n\n"
+        
+        desc += "**Sisa Kartu:**\n"
+        for p in self.game.players:
+            count = len(self.game.hands[p.id])
+            status = "🎮" if p.id == current_player.id else "👤"
+            desc += f"{status} {p.display_name}: **{count}** kartu\n"
+
+        color_map = {'red': discord.Color.red(), 'green': discord.Color.green(), 'blue': discord.Color.blue(), 'yellow': discord.Color.gold(), 'wild': discord.Color.purple()}
+        embed = discord.Embed(title="🎮 UNO Game", description=desc, color=color_map.get(top_card.color, discord.Color.default()))
+        return embed
+
+    async def process_draw(self, interaction: discord.Interaction):
+        player = interaction.user
+        drawn = self.game.draw_card(1)
+        if drawn:
+            self.game.hands[player.id].extend(drawn)
+            await interaction.response.send_message(f"Kamu mengambil: {drawn[0]}", ephemeral=True)
+        else:
+            await interaction.response.send_message("Deck habis!", ephemeral=True)
+        
+        self.game.next_turn()
+        await self.message.edit(embed=self.update_embed(), view=self)
+
+    async def process_move(self, interaction: discord.Interaction, card_index, chosen_color=None):
+        player = interaction.user
+        card = self.game.hands[player.id].pop(card_index)
+        
+        # Efek Kartu
+        if chosen_color:
+            card.color = chosen_color # Ubah warna kartu wild di discard pile
+        
+        self.game.discard_pile.append(card)
+        
+        msg = f"{player.mention} memainkan **{card}**."
+        
+        # Cek Menang
+        if len(self.game.hands[player.id]) == 0:
+            # WINNER
+            winner_data = await bot.db.get_user_data(player.id)
+            await bot.db.update_user_balance(player.id, winner_data['coins'] + self.game.pot)
+            
+            embed = discord.Embed(title="🏆 UNO WINNER!", description=f"Selamat {player.mention}! Kamu memenangkan permainan dan mengambil seluruh pot sebesar **{self.game.pot}** koin!", color=discord.Color.gold())
+            await self.message.edit(content=None, embed=embed, view=None)
+            self.stop()
+            await interaction.response.send_message("Permainan selesai!", ephemeral=True)
+            return
+
+        # Efek Spesial
+        if card.type == 'skip':
+            self.game.next_turn() # Skip next player
+            msg += " Giliran selanjutnya dilewati!"
+        elif card.type == 'reverse':
+            self.game.direction *= -1
+            if len(self.game.players) == 2: # Reverse di 2 pemain = Skip
+                self.game.next_turn()
+            msg += " Arah permainan berbalik!"
+        elif card.type == 'draw2':
+            next_p_idx = (self.game.turn_index + self.game.direction) % len(self.game.players)
+            next_p = self.game.players[next_p_idx]
+            drawn = self.game.draw_card(2)
+            self.game.hands[next_p.id].extend(drawn)
+            self.game.next_turn() # Skip player yang draw
+            msg += f" {next_p.mention} mengambil 2 kartu dan dilewati!"
+        elif card.type == 'wild4':
+            next_p_idx = (self.game.turn_index + self.game.direction) % len(self.game.players)
+            next_p = self.game.players[next_p_idx]
+            drawn = self.game.draw_card(4)
+            self.game.hands[next_p.id].extend(drawn)
+            self.game.next_turn() # Skip player yang draw
+            msg += f" {next_p.mention} mengambil 4 kartu dan dilewati!"
+
+        self.game.next_turn()
+        await self.message.edit(content=msg, embed=self.update_embed(), view=self)
+        if not interaction.response.is_done():
+            await interaction.response.send_message("Kartu dimainkan.", ephemeral=True)
+
+    @discord.ui.button(label="Mainkan Giliran", style=discord.ButtonStyle.primary)
+    async def play_turn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.game.players[self.game.turn_index].id:
+            await interaction.response.send_message("Bukan giliranmu!", ephemeral=True)
+            return
+        
+        view = UnoPlayView(self.game, self)
+        await interaction.response.send_message("Pilih tindakan:", view=view, ephemeral=True)
+
+class UnoLobbyView(discord.ui.View):
+    def __init__(self, host, bet):
+        super().__init__(timeout=300)
+        self.host = host
+        self.bet = bet
+        self.players = [host]
+
+    @discord.ui.button(label="Join Game", style=discord.ButtonStyle.success)
+    async def join(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user in self.players:
+            await interaction.response.send_message("Kamu sudah bergabung!", ephemeral=True)
+            return
+        if len(self.players) >= 4:
+            await interaction.response.send_message("Lobby penuh!", ephemeral=True)
+            return
+        
+        user_data = await bot.db.get_user_data(interaction.user.id)
+        if user_data['coins'] < self.bet:
+            await interaction.response.send_message(f"Koinmu tidak cukup! Butuh {self.bet} koin.", ephemeral=True)
+            return
+
+        self.players.append(interaction.user)
+        await interaction.response.edit_message(embed=self.create_embed(), view=self)
+
+    @discord.ui.button(label="Mulai Game", style=discord.ButtonStyle.primary)
+    async def start(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user != self.host:
+            await interaction.response.send_message("Hanya host yang bisa memulai game.", ephemeral=True)
+            return
+        if len(self.players) < 2:
+            await interaction.response.send_message("Butuh minimal 2 pemain!", ephemeral=True)
+            return
+
+        # Potong saldo semua pemain
+        pot = 0
+        for p in self.players:
+            p_data = await bot.db.get_user_data(p.id)
+            await bot.db.update_user_balance(p.id, p_data['coins'] - self.bet)
+            pot += self.bet
+
+        # Setup Game
+        game = UnoGame()
+        game.players = self.players
+        game.bet = self.bet
+        game.pot = pot
+        game.create_deck()
+        
+        # Deal cards
+        for p in game.players:
+            game.hands[p.id] = game.draw_card(7)
+        
+        # Start card (cannot be wild for simplicity logic here, or handle it)
+        while True:
+            start_card = game.draw_card(1)[0]
+            if start_card.color != 'wild':
+                game.discard_pile.append(start_card)
+                break
+            game.deck.append(start_card) # Return wild and shuffle if needed, simplified just append back
+            random.shuffle(game.deck)
+
+        game_view = UnoGameView(game)
+        embed = game_view.update_embed()
+        await interaction.response.edit_message(content="Game Dimulai!", embed=embed, view=game_view)
+        game_view.message = await interaction.original_response()
+
+    def create_embed(self):
+        embed = discord.Embed(title="UNO Lobby", description=f"Host: {self.host.mention}\nTaruhan: **{self.bet}** koin\n\n**Pemain ({len(self.players)}/4):**", color=discord.Color.orange())
+        for p in self.players:
+            embed.add_field(name=p.display_name, value="Ready", inline=False)
+        return embed
+
+@game_group.command(name="uno", description="Mainkan UNO multiplayer dengan taruhan!")
+@app_commands.describe(taruhan="Jumlah koin untuk bergabung.")
+async def play_uno(interaction: discord.Interaction, taruhan: app_commands.Range[int, 10]):
+    user_data = await bot.db.get_user_data(interaction.user.id)
+    if user_data['coins'] < taruhan:
+        await interaction.response.send_message("Koinmu tidak cukup untuk membuat lobby ini.", ephemeral=True)
+        return
+
+    view = UnoLobbyView(interaction.user, taruhan)
+    await interaction.response.send_message(embed=view.create_embed(), view=view)
+
+### GAME 4: SLOT MACHINE
+
+class SlotMachineView(discord.ui.View):
+    def __init__(self, author: discord.User, bet: int):
+        super().__init__(timeout=180.0)
+        self.author = author
+        self.bet = bet
+        self.reels = ['❓', '❓', '❓']
+        self.emojis = ['🍒', '🍋', '🍊', '🍇', '🔔', '💎', '💰', '🍀']
+        # Payouts: {emoji: {count: multiplier}}
+        self.payouts = {
+            '🍒': {2: 1.5, 3: 3}, '🍋': {2: 1.5, 3: 3},
+            '🍊': {2: 2, 3: 4}, '🍇': {2: 2.5, 3: 5},
+            '🍀': {2: 3, 3: 7}, '🔔': {2: 5, 3: 15},
+            '💎': {2: 10, 3: 30}, '💰': {2: 25, 3: 77},
+        }
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author.id:
+            await interaction.response.send_message("Ini bukan permainanmu!", ephemeral=True)
+            return False
+        return True
+
+    def create_embed(self, status: str, win_amount: int = 0) -> discord.Embed:
+        reel_display = ' | '.join(self.reels)
+        color = discord.Color.green() if win_amount > 0 else (discord.Color.dark_grey() if "kalah" in status.lower() else discord.Color.blue())
+        
+        embed = discord.Embed(title="🎰 Mesin Slot 🎰", color=color)
+        embed.description = f"# ▸ {reel_display} ◂\n\n{status}"
+        embed.add_field(name="Taruhan", value=f"{self.bet} koin")
+        if win_amount > 0:
+            embed.add_field(name="Kemenangan", value=f"**{win_amount} koin**")
+        embed.set_footer(text=f"Bermain sebagai: {self.author.display_name}")
+        return embed
+
+    async def spin_logic(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        spin_button = self.children[0]
+        spin_button.disabled = True
+        await interaction.edit_original_response(view=self)
+
+        user_data = await bot.db.get_user_data(self.author.id)
+        if user_data['coins'] < self.bet:
+            for item in self.children: item.disabled = True
+            await interaction.edit_original_response(content="❌ Koinmu tidak cukup untuk memutar lagi.", embed=None, view=self)
+            self.stop()
+            return
+        await bot.db.update_user_balance(self.author.id, user_data['coins'] - self.bet)
+
+        for _ in range(3):
+            self.reels = [random.choice(self.emojis) for _ in range(3)]
+            await asyncio.sleep(0.4)
+
+        counts = {emoji: self.reels.count(emoji) for emoji in set(self.reels)}
+        win_amount = 0
+        status = f"Kamu kalah dan kehilangan **{self.bet}** koin."
+
+        winning_emoji = next((e for e, c in counts.items() if c == 3), None) or \
+                        next((e for e, c in counts.items() if c == 2), None)
+        
+        if winning_emoji:
+            count = counts[winning_emoji]
+            multiplier = self.payouts.get(winning_emoji, {}).get(count, 0)
+            if multiplier > 0:
+                win_amount = int(self.bet * multiplier)
+                status = f"🎉 **JACKPOT!** Kamu memenangkan **{win_amount}** koin!"
+                current_data = await bot.db.get_user_data(self.author.id)
+                await bot.db.update_user_balance(self.author.id, current_data['coins'] + win_amount)
+        
+        embed = self.create_embed(status, win_amount)
+        spin_button.disabled = False
+        await interaction.edit_original_response(embed=embed, view=self)
+
+    @discord.ui.button(label="Putar Lagi", style=discord.ButtonStyle.primary, emoji="▶️")
+    async def spin_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.spin_logic(interaction)
+
+    @discord.ui.button(label="Berhenti", style=discord.ButtonStyle.danger, emoji="⏹️")
+    async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for item in self.children: item.disabled = True
+        await interaction.response.edit_message(content="Permainan dihentikan.", embed=None, view=self)
+        self.stop()
+
+@game_group.command(name="slotmachine", description="Mainkan mesin slot dan menangkan hadiah besar!")
+@app_commands.describe(taruhan="Jumlah koin yang ingin dipertaruhkan per putaran.")
+async def slot_machine(interaction: discord.Interaction, taruhan: app_commands.Range[int, 1]):
+    user_data = await bot.db.get_user_data(interaction.user.id)
+    if user_data['coins'] < taruhan:
+        await interaction.response.send_message("❌ Koinmu tidak cukup untuk taruhan awal ini!", ephemeral=True)
+        return
+    
+    view = SlotMachineView(interaction.user, taruhan)
+    embed = view.create_embed("Selamat datang! Tekan 'Putar Lagi' untuk memulai permainan.")
+    await interaction.response.send_message(embed=embed, view=view)
+
+@game_group.command(name="guessnumber", description="Tebak angka 1-10 dan menangkan 5x lipat taruhanmu!")
+@app_commands.describe(
+    taruhan="Jumlah koin yang ingin dipertaruhkan.",
+    tebakan="Tebakan angkamu dari 1 sampai 10."
+)
+async def guess_number(interaction: discord.Interaction, taruhan: app_commands.Range[int, 1], tebakan: app_commands.Range[int, 1, 10]):
+    user_data = await bot.db.get_user_data(interaction.user.id)
+    if user_data['coins'] < taruhan:
+        await interaction.response.send_message("❌ Koinmu tidak cukup untuk taruhan ini!", ephemeral=True)
+        return
+
+    # Langsung potong taruhan untuk game ini
+    await bot.db.update_user_balance(interaction.user.id, user_data['coins'] - taruhan)
+
+    angka_bot = random.randint(1, 10)
+    reward_multiplier = 5
+    reward = taruhan * reward_multiplier
+
+    if tebakan == angka_bot:
+        # Menang, kembalikan taruhan + hadiah
+        await bot.db.update_user_balance(interaction.user.id, user_data['coins'] - taruhan + reward)
+        embed = discord.Embed(title="🎉 JACKPOT! 🎉", description=f"Tebakanmu **{tebakan}** benar! Angka rahasianya adalah **{angka_bot}**.\nKamu memenangkan **{reward}** koin!", color=discord.Color.green())
+    else:
+        # Kalah, taruhan sudah dipotong
+        embed = discord.Embed(title="💥 ZONK! 💥", description=f"Tebakanmu **{tebakan}** salah. Angka rahasianya adalah **{angka_bot}**.\nKamu kehilangan **{taruhan}** koin.", color=discord.Color.red())
+    
+    await interaction.response.send_message(embed=embed)
+
 bot.tree.add_command(game_group)
+
+# --- Perintah Admin ---
+admin_group = app_commands.Group(
+    name="admin", 
+    description="Perintah khusus untuk pemilik bot.",
+    # Hanya user dengan izin 'Administrator' yang bisa melihat command ini di daftar slash command.
+    default_permissions=discord.Permissions(administrator=True),
+    guild_only=True # Perintah admin sebaiknya hanya untuk server
+)
+
+@admin_group.command(name="givecoins", description="Berikan atau kurangi koin seorang pengguna.")
+@app_commands.describe(user="Pengguna yang akan diubah saldonya.", amount="Jumlah koin (bisa negatif untuk mengurangi).")
+@commands.is_owner() # Decorator ini menangani pengecekan kepemilikan bot
+async def give_coins(interaction: discord.Interaction, user: discord.User, amount: int):
+    # Pengecekan 'is_owner' sekarang ditangani secara otomatis oleh decorator.
+    # Global error handler akan mengirim pesan jika pengguna non-owner mencoba.
+    
+    if user.bot:
+        await interaction.response.send_message("❌ Tidak bisa memberikan koin kepada bot.", ephemeral=True)
+        return
+
+    user_data = await bot.db.get_user_data(user.id)
+    new_balance = user_data['coins'] + amount
+    
+    await bot.db.update_user_balance(user.id, new_balance)
+    
+    await interaction.response.send_message(f"✅ Berhasil mengubah saldo {user.mention} sebesar `{amount}` koin. Saldo barunya sekarang adalah **{new_balance}** koin.", ephemeral=True)
+
+bot.tree.add_command(admin_group)
 
 # --- Fitur Sosial (Profil & Reputasi) ---
 
@@ -769,6 +1466,55 @@ async def rep(interaction: discord.Interaction, user: discord.User):
 
     await bot.db.give_reputation(giver_id=giver.id, receiver_id=receiver.id)
     await interaction.response.send_message(f"✅ Anda telah memberikan 1 poin reputasi kepada {receiver.mention}!")
+
+@bot.tree.command(name="leaderboard", description="Lihat papan peringkat server.")
+@app_commands.describe(kategori="Pilih kategori papan peringkat yang ingin dilihat.")
+@app_commands.choices(kategori=[
+    app_commands.Choice(name="Koin Terbanyak", value="coins"),
+    app_commands.Choice(name="Level Tertinggi", value="level"),
+    app_commands.Choice(name="Reputasi Teratas", value="reputation"),
+])
+async def leaderboard(interaction: discord.Interaction, kategori: app_commands.Choice[str]):
+    await interaction.response.defer(ephemeral=False) # Menunda respons karena query DB bisa lama
+
+    leaderboard_data = await bot.db.get_leaderboard(sort_by=kategori.value, limit=10)
+
+    if not leaderboard_data:
+        await interaction.followup.send("Belum ada data untuk ditampilkan di papan peringkat.")
+        return
+
+    title_map = {
+        "coins": "💰 Papan Peringkat Koin",
+        "level": "🏆 Papan Peringkat Level",
+        "reputation": "✨ Papan Peringkat Reputasi"
+    }
+    
+    unit_map = {
+        "coins": "koin",
+        "level": "Level",
+        "reputation": "rep"
+    }
+
+    embed = discord.Embed(
+        title=title_map.get(kategori.value, "Papan Peringkat"),
+        color=discord.Color.gold()
+    )
+
+    description = ""
+    for i, record in enumerate(leaderboard_data):
+        user_id = record['user_id']
+        value = record[kategori.value]
+        
+        user = bot.get_user(user_id) or await bot.fetch_user(user_id)
+        user_name = user.display_name if user else f"User (ID: {user_id})"
+        
+        emoji = "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else f"**{i+1}.**"
+        description += f"{emoji} {user.mention} - **{value}** {unit_map.get(kategori.value)}\n"
+
+    embed.description = description
+    embed.set_footer(text=f"Top 10 di server ini berdasarkan {kategori.name}")
+
+    await interaction.followup.send(embed=embed)
 
 if __name__ ==  "__main__":
     # keep_alive() # Matikan baris ini jika menjalankan di laptop/PC lokal agar tidak error socket
