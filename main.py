@@ -9,7 +9,6 @@ from datetime import datetime, timedelta, timezone, time
 
 # Impor kelas DatabaseManager yang kita buat
 from database import DatabaseManager
-from keep_alive import keep_alive
 
 # --- Konfigurasi & Variabel Global ---
 load_dotenv(override=True)
@@ -49,6 +48,7 @@ class MyBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
+        intents.members = True # Diperlukan untuk leaderboard server
         super().__init__(command_prefix='!', intents=intents)
         # Inisialisasi DatabaseManager
         self.db = DatabaseManager(dsn=DATABASE_URL)
@@ -111,24 +111,14 @@ class MyBot(commands.Bot):
                 embed.set_thumbnail(url=user.display_avatar.url)
                 await channel.send(embed=embed)
     
-    # PART 5: Listener untuk memberikan XP saat user mengirim pesan
     async def on_message(self, message: discord.Message):
-        # Abaikan pesan dari bot atau yang bukan dari server
         if message.author.bot or not message.guild:
             return
 
-        # Dapatkan konteks untuk memeriksa apakah pesan adalah command.
-        # Ini tidak menjalankan command, hanya memeriksa.
         ctx = await self.get_context(message)
 
-        # Proses semua command (prefix commands).
-        # Ini harus dipanggil agar command prefix (!) bisa berjalan.
         await self.process_commands(message)
 
-        # Jika `ctx.valid` adalah True, berarti pesan tersebut adalah command yang valid.
-        # Kita hentikan eksekusi di sini untuk menghindari "double action",
-        # yaitu menjalankan command DAN memberikan XP. Ini juga mencegah
-        # pesan level-up muncul bersamaan dengan output command.
         if ctx.valid:
             return
 
@@ -161,6 +151,21 @@ class MyBot(commands.Bot):
             await message.channel.send(f"🎉 Selamat, {message.author.mention}! Kamu telah mencapai **Level {new_level}**!")
 
 bot = MyBot()
+
+# --- Helper Function untuk Auto-Delete Pesan ---
+async def send_auto_delete(interaction: discord.Interaction, content: str = None, embed: discord.Embed = None, delay: int = 3, ephemeral: bool = True):
+    """Mengirim pesan yang akan menghapus dirinya sendiri setelah delay tertentu."""
+    if interaction.response.is_done():
+        msg = await interaction.followup.send(content=content, embed=embed, ephemeral=ephemeral)
+    else:
+        await interaction.response.send_message(content=content, embed=embed, ephemeral=ephemeral)
+        msg = await interaction.original_response()
+    
+    await asyncio.sleep(delay)
+    try:
+        await msg.delete()
+    except (discord.NotFound, discord.HTTPException):
+        pass
 
 # Global error handler untuk slash commands
 @bot.tree.error
@@ -253,7 +258,7 @@ async def help_command(interaction: discord.Interaction):
                 commands_by_category[category_map["Game"]].append(f"`/{cmd.name}`: {cmd.description}")
             elif cmd.name == "rps":
                 commands_by_category[category_map["Judi"]].append(f"`/{cmd.name}`: {cmd.description}")
-            elif cmd.name in ["balance", "daily", "profile", "rep", "leaderboard"]:
+            elif cmd.name in ["balance", "daily", "profile", "rep", "leaderboard", "pay"]:
                 commands_by_category[category_map["Sosial"]].append(f"`/{cmd.name}`: {cmd.description}")
             elif cmd.name not in ["help"]: # Jangan tampilkan command help di dalam help
                 commands_by_category[category_map["General"]].append(f"`/{cmd.name}`: {cmd.description}")
@@ -337,10 +342,10 @@ async def set_birthday(interaction: discord.Interaction, tanggal: str):
         
         await bot.db.set_birthday(interaction.user.id, birthday_str_db)
         
-        await interaction.response.send_message(f"✅ Ulang tahunmu berhasil diatur ke tanggal **{tanggal}**!", ephemeral=True)
+        await send_auto_delete(interaction, f"✅ Ulang tahunmu berhasil diatur ke tanggal **{tanggal}**!", delay=5)
 
     except ValueError:
-        await interaction.response.send_message("❌ Format tanggal salah! Harap gunakan format **DD-MM**, contoh: `25-12`.", ephemeral=True)
+        await send_auto_delete(interaction, "❌ Format tanggal salah! Harap gunakan format **DD-MM**, contoh: `25-12`.", delay=5)
 
 @birthday_group.command(name="info", description="Lihat tanggal ulang tahun yang tersimpan")
 async def info_birthday(interaction: discord.Interaction):
@@ -383,12 +388,12 @@ async def tebak_kata(interaction: discord.Interaction):
             user_data = await bot.db.get_user_data(interaction.user.id)
             new_balance = user_data['coins'] + TEBAK_KATA_REWARD
             await bot.db.update_user_balance(interaction.user.id, new_balance)
-            await interaction.followup.send(f"🎉 Benar sekali! Jawabannya adalah **{kata_asli}**. Kamu mendapatkan **{TEBAK_KATA_REWARD}** koin!")
+            await send_auto_delete(interaction, f"🎉 Benar sekali! Jawabannya adalah **{kata_asli}**. Kamu mendapatkan **{TEBAK_KATA_REWARD}** koin!", delay=10, ephemeral=False)
         else:
-            await interaction.followup.send(f"❌ Salah! Jawaban yang benar adalah **{kata_asli}**. Coba lagi lain kali!")
+            await send_auto_delete(interaction, f"❌ Salah! Jawaban yang benar adalah **{kata_asli}**. Coba lagi lain kali!", delay=10, ephemeral=False)
 
     except asyncio.TimeoutError:
-        await interaction.followup.send(f"⏰ Waktu habis! Jawaban yang benar adalah **{kata_asli}**.")
+        await send_auto_delete(interaction, f"⏰ Waktu habis! Jawaban yang benar adalah **{kata_asli}**.", delay=10, ephemeral=False)
 
 @bot.tree.command(name="mathbattle", description="Selesaikan soal matematika dalam 10 detik!")
 async def math_battle(interaction: discord.Interaction):
@@ -414,14 +419,14 @@ async def math_battle(interaction: discord.Interaction):
             user_data = await bot.db.get_user_data(interaction.user.id)
             new_balance = user_data['coins'] + MATH_BATTLE_REWARD
             await bot.db.update_user_balance(interaction.user.id, new_balance)
-            await interaction.followup.send(f"🧠 Cerdas! Jawabannya **{jawaban}**. Kamu dapat **{MATH_BATTLE_REWARD}** koin!")
+            await send_auto_delete(interaction, f"🧠 Cerdas! Jawabannya **{jawaban}**. Kamu dapat **{MATH_BATTLE_REWARD}** koin!", delay=10, ephemeral=False)
         else:
-            await interaction.followup.send(f"❌ Salah! Jawaban yang benar adalah **{jawaban}**.")
+            await send_auto_delete(interaction, f"❌ Salah! Jawaban yang benar adalah **{jawaban}**.", delay=10, ephemeral=False)
     
     except asyncio.TimeoutError:
-        await interaction.followup.send(f"⏰ Waktu habis! Jawabannya adalah **{jawaban}**.")
+        await send_auto_delete(interaction, f"⏰ Waktu habis! Jawabannya adalah **{jawaban}**.", delay=10, ephemeral=False)
     except (ValueError, TypeError):
-        await interaction.followup.send(f"❌ Itu bukan angka! Jawaban yang benar adalah **{jawaban}**.")
+        await send_auto_delete(interaction, f"❌ Itu bukan angka! Jawaban yang benar adalah **{jawaban}**.", delay=5, ephemeral=False)
 
 @bot.tree.command(name="higherlower", description="Tebak angka rahasia antara 1-100.")
 async def higher_lower(interaction: discord.Interaction):
@@ -442,24 +447,24 @@ async def higher_lower(interaction: discord.Interaction):
                 user_data = await bot.db.get_user_data(interaction.user.id)
                 new_balance = user_data['coins'] + HIGHER_LOWER_REWARD
                 await bot.db.update_user_balance(interaction.user.id, new_balance)
-                await interaction.followup.send(f"🏆 **HEBAT!** Kamu berhasil menebak angkanya, yaitu **{angka_rahasia}**! Kamu memenangkan **{HIGHER_LOWER_REWARD}** koin!")
+                await send_auto_delete(interaction, f"🏆 **HEBAT!** Kamu berhasil menebak angkanya, yaitu **{angka_rahasia}**! Kamu memenangkan **{HIGHER_LOWER_REWARD}** koin!", delay=15, ephemeral=False)
                 return # Keluar dari fungsi jika sudah menang
             
             elif tebakan < angka_rahasia:
                 sisa_kesempatan = kesempatan - (i + 1)
-                await interaction.followup.send(f"🔼 **Lebih Tinggi!** (Sisa kesempatan: {sisa_kesempatan})")
+                await send_auto_delete(interaction, f"🔼 **Lebih Tinggi!** (Sisa kesempatan: {sisa_kesempatan})", delay=5, ephemeral=False)
             else:
                 sisa_kesempatan = kesempatan - (i + 1)
-                await interaction.followup.send(f"🔽 **Lebih Rendah!** (Sisa kesempatan: {sisa_kesempatan})")
+                await send_auto_delete(interaction, f"🔽 **Lebih Rendah!** (Sisa kesempatan: {sisa_kesempatan})", delay=5, ephemeral=False)
 
         except asyncio.TimeoutError:
-            await interaction.followup.send(f"⏰ Waktu menebak habis! Angka rahasianya adalah **{angka_rahasia}**.")
+            await send_auto_delete(interaction, f"⏰ Waktu menebak habis! Angka rahasianya adalah **{angka_rahasia}**.", delay=10, ephemeral=False)
             return
         except (ValueError, TypeError):
-            await interaction.followup.send("Itu bukan angka yang valid. Coba lagi.")
+            await send_auto_delete(interaction, "Itu bukan angka yang valid. Coba lagi.", delay=3, ephemeral=False)
 
     # Jika loop selesai tanpa menang
-    await interaction.followup.send(f"GAME OVER! Kamu kehabisan kesempatan. Angka rahasianya adalah **{angka_rahasia}**.")
+    await send_auto_delete(interaction, f"GAME OVER! Kamu kehabisan kesempatan. Angka rahasianya adalah **{angka_rahasia}**.", delay=10, ephemeral=False)
 
 # --- Game Batu Kertas Gunting (PvP) ---
 
@@ -494,15 +499,15 @@ class RPSBattleView(discord.ui.View):
         player = interaction.user
 
         if player.id not in self.choices:
-            await interaction.response.send_message("Kamu tidak ada dalam permainan ini!", ephemeral=True)
+            await send_auto_delete(interaction, "Kamu tidak ada dalam permainan ini!", delay=3)
             return
 
         if self.choices[player.id] is not None:
-            await interaction.response.send_message("Kamu sudah memilih!", ephemeral=True)
+            await send_auto_delete(interaction, "Kamu sudah memilih!", delay=3)
             return
 
         self.choices[player.id] = choice
-        await interaction.response.send_message(f"Kamu memilih **{choice}**. Menunggu lawan...", ephemeral=True)
+        await send_auto_delete(interaction, f"Kamu memilih **{choice}**. Menunggu lawan...", delay=5)
 
         p1_choice = self.choices[self.player1.id]
         p2_choice = self.choices[self.player2.id]
@@ -559,7 +564,7 @@ class RPSChallengeView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.opponent.id:
-            await interaction.response.send_message("Ini bukan tantangan untukmu!", ephemeral=True)
+            await send_auto_delete(interaction, "Ini bukan tantangan untukmu!", delay=3)
             return False
         return True
     
@@ -602,20 +607,20 @@ async def rps(interaction: discord.Interaction, lawan: discord.User, taruhan: ap
     initiator = interaction.user
 
     if initiator.id == lawan.id:
-        await interaction.response.send_message("❌ Kamu tidak bisa menantang dirimu sendiri!", ephemeral=True)
+        await send_auto_delete(interaction, "❌ Kamu tidak bisa menantang dirimu sendiri!", delay=5)
         return
     if lawan.bot:
-        await interaction.response.send_message("❌ Kamu tidak bisa menantang bot!", ephemeral=True)
+        await send_auto_delete(interaction, "❌ Kamu tidak bisa menantang bot!", delay=5)
         return
 
     initiator_data = await bot.db.get_user_data(initiator.id)
     if initiator_data['coins'] < taruhan:
-        await interaction.response.send_message(f"❌ Koinmu tidak cukup untuk bertaruh sebesar {taruhan} koin.", ephemeral=True)
+        await send_auto_delete(interaction, f"❌ Koinmu tidak cukup untuk bertaruh sebesar {taruhan} koin.", delay=5)
         return
 
     opponent_data = await bot.db.get_user_data(lawan.id)
     if opponent_data['coins'] < taruhan:
-        await interaction.response.send_message(f"❌ {lawan.display_name} tidak memiliki cukup koin untuk taruhan ini.", ephemeral=True)
+        await send_auto_delete(interaction, f"❌ {lawan.display_name} tidak memiliki cukup koin untuk taruhan ini.", delay=5)
         return
 
     view = RPSChallengeView(initiator, lawan, taruhan)
@@ -651,7 +656,7 @@ class RiskTowerView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author.id:
-            await interaction.response.send_message("Ini bukan permainanmu!", ephemeral=True)
+            await send_auto_delete(interaction, "Ini bukan permainanmu!", delay=3)
             return False
         return True
 
@@ -727,7 +732,7 @@ class RiskTowerView(discord.ui.View):
 async def risk_tower(interaction: discord.Interaction, taruhan: app_commands.Range[int, 1]):
     user_data = await bot.db.get_user_data(interaction.user.id)
     if user_data['coins'] < taruhan:
-        await interaction.response.send_message("❌ Koinmu tidak cukup untuk taruhan ini!", ephemeral=True)
+        await send_auto_delete(interaction, "❌ Koinmu tidak cukup untuk taruhan ini!", delay=5)
         return
  
     # Langsung potong taruhan
@@ -751,7 +756,7 @@ class EnergyCoreView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author.id:
-            await interaction.response.send_message("Ini bukan permainanmu!", ephemeral=True)
+            await send_auto_delete(interaction, "Ini bukan permainanmu!", delay=3)
             return False
         return True
 
@@ -828,7 +833,7 @@ class EnergyCoreView(discord.ui.View):
 async def energy_core(interaction: discord.Interaction, taruhan: app_commands.Range[int, 1]):
     user_data = await bot.db.get_user_data(interaction.user.id)
     if user_data['coins'] < taruhan:
-        await interaction.response.send_message("❌ Koinmu tidak cukup untuk taruhan ini!", ephemeral=True)
+        await send_auto_delete(interaction, "❌ Koinmu tidak cukup untuk taruhan ini!", delay=5)
         return
  
     await bot.db.update_user_balance(interaction.user.id, user_data['coins'] - taruhan)
@@ -851,7 +856,7 @@ class ShadowDealView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author.id:
-            await interaction.response.send_message("Ini bukan permainanmu!", ephemeral=True)
+            await send_auto_delete(interaction, "Ini bukan permainanmu!", delay=3)
             return False
         return True
 
@@ -904,7 +909,7 @@ class ShadowDealView(discord.ui.View):
 async def shadow_deal(interaction: discord.Interaction, taruhan: app_commands.Range[int, 1]):
     user_data = await bot.db.get_user_data(interaction.user.id)
     if user_data['coins'] < taruhan:
-        await interaction.response.send_message("❌ Koinmu tidak cukup untuk taruhan ini!", ephemeral=True)
+        await send_auto_delete(interaction, "❌ Koinmu tidak cukup untuk taruhan ini!", delay=5)
         return
  
     await bot.db.update_user_balance(interaction.user.id, user_data['coins'] - taruhan)
@@ -939,8 +944,10 @@ class UnoGame:
         self.direction = 1 # 1 or -1
         self.is_active = False
         self.bet = 0
+        self.active_wild_color = None # State untuk warna wild yang aktif
         self.pot = 0
         self.winner = None
+        self.last_action = "Permainan dimulai!"
 
     def create_deck(self):
         colors = ['red', 'green', 'blue', 'yellow']
@@ -976,10 +983,24 @@ class UnoGame:
         return drawn
 
     def can_play(self, card, top_card):
-        if card.color == 'wild': return True
-        if card.color == top_card.color: return True
-        if card.type == 'number' and card.value == top_card.value: return True
-        if card.type != 'number' and card.type == top_card.type: return True
+        # Kartu wild selalu bisa dimainkan
+        if card.color == 'wild':
+            return True
+        
+        # Tentukan warna efektif dari kartu teratas (memperhitungkan kartu wild yang sudah dipilih warnanya)
+        effective_top_color = self.active_wild_color if top_card.color == 'wild' else top_card.color
+        
+        # Aturan 1: Warna cocok
+        if card.color == effective_top_color:
+            return True
+        
+        # Aturan 2: Angka atau Tipe cocok (tidak berlaku jika kartu atas adalah wild)
+        if top_card.color != 'wild':
+            if card.type == 'number' and card.value == top_card.value:
+                return True
+            if card.type != 'number' and card.type == top_card.type:
+                return True
+                
         return False
 
     def next_turn(self):
@@ -1010,7 +1031,7 @@ class UnoPlayView(discord.ui.View):
         # Batasi opsi max 25 (limit Discord)
         if len(options) > 25:
             options = options[:25]
-
+ 
         if options:
             select = discord.ui.Select(placeholder="Pilih kartu untuk dimainkan...", options=options)
             select.callback = self.play_card_callback
@@ -1027,10 +1048,13 @@ class UnoPlayView(discord.ui.View):
             self.selected_card_index = index
             await interaction.response.edit_message(content="Pilih warna untuk kartu Wild:", view=UnoColorView(self.game, self.main_view, index))
         else:
+            # Defer interaksi untuk memberi waktu pada logika game
+            await interaction.response.defer(ephemeral=True)
             await self.main_view.process_move(interaction, index)
 
     @discord.ui.button(label="Ambil Kartu (Draw)", style=discord.ButtonStyle.secondary, emoji="🃏")
     async def draw_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
         await self.main_view.process_draw(interaction)
 
 class UnoColorView(discord.ui.View):
@@ -1041,6 +1065,8 @@ class UnoColorView(discord.ui.View):
         self.card_index = card_index
 
     async def set_color(self, interaction: discord.Interaction, color: str):
+        # Defer interaksi tombol warna untuk mencegah timeout
+        await interaction.response.defer(ephemeral=True)
         await self.main_view.process_move(interaction, self.card_index, chosen_color=color)
 
     @discord.ui.button(label="Merah", style=discord.ButtonStyle.danger)
@@ -1058,12 +1084,21 @@ class UnoGameView(discord.ui.View):
         self.game = game
         self.message = None
 
+    async def _delete_msg_after(self, message: discord.WebhookMessage, delay: float):
+        """Helper non-blocking task untuk menghapus pesan setelah jeda waktu."""
+        await asyncio.sleep(delay)
+        try:
+            await message.delete()
+        except (discord.NotFound, discord.HTTPException):
+            pass # Abaikan jika pesan sudah hilang atau ada error lain.
+
     def update_embed(self):
         top_card = self.game.discard_pile[-1]
         current_player = self.game.players[self.game.turn_index]
         
-        desc = f"**Giliran:** {current_player.mention}\n"
-        desc += f"**Arah:** {'🔄 Searah Jarum Jam' if self.game.direction == 1 else '🔄 Berlawanan Arah'}\n"
+        desc =  f"**Aksi Terakhir:** *{self.game.last_action}*\n\n"
+        desc += f"**Giliran Saat Ini:** {current_player.mention}\n"
+        desc += f"**Arah Giliran:** {'Searah Jarum Jam' if self.game.direction == 1 else 'Berlawanan Arah'}\n"
         desc += f"**Pot:** {self.game.pot} koin\n\n"
         desc += f"**Kartu Atas:**\n# {top_card}\n\n"
         
@@ -1081,25 +1116,32 @@ class UnoGameView(discord.ui.View):
         player = interaction.user
         drawn = self.game.draw_card(1)
         if drawn:
+            self.game.last_action = f"{player.mention} mengambil satu kartu."
             self.game.hands[player.id].extend(drawn)
-            await interaction.response.send_message(f"Kamu mengambil: {drawn[0]}", ephemeral=True)
+            msg = await interaction.followup.send(f"Kamu mengambil: {drawn[0]}", ephemeral=True)
+            asyncio.create_task(self._delete_msg_after(msg, 5))
         else:
-            await interaction.response.send_message("Deck habis!", ephemeral=True)
+            self.game.last_action = f"{player.mention} mencoba mengambil kartu, tapi deck kosong."
+            msg = await interaction.followup.send("Deck habis!", ephemeral=True)
+            asyncio.create_task(self._delete_msg_after(msg, 5))
         
         self.game.next_turn()
-        await self.message.edit(embed=self.update_embed(), view=self)
+        next_player = self.game.players[self.game.turn_index]
+        await self.message.edit(content=f"Giliranmu, {next_player.mention}!", embed=self.update_embed(), view=self)
 
     async def process_move(self, interaction: discord.Interaction, card_index, chosen_color=None):
         player = interaction.user
         card = self.game.hands[player.id].pop(card_index)
         
-        # Efek Kartu
-        if chosen_color:
-            card.color = chosen_color # Ubah warna kartu wild di discard pile
+        # Atur state warna wild, jangan ubah properti kartu aslinya
+        self.game.active_wild_color = chosen_color if card.color == 'wild' else None
         
         self.game.discard_pile.append(card)
         
-        msg = f"{player.mention} memainkan **{card}**."
+        if chosen_color:
+            msg = f"{player.mention} memainkan **{card}** dan memilih warna **{chosen_color.capitalize()}**."
+        else:
+            msg = f"{player.mention} memainkan **{card}**."
         
         # Cek Menang
         if len(self.game.hands[player.id]) == 0:
@@ -1110,7 +1152,8 @@ class UnoGameView(discord.ui.View):
             embed = discord.Embed(title="🏆 UNO WINNER!", description=f"Selamat {player.mention}! Kamu memenangkan permainan dan mengambil seluruh pot sebesar **{self.game.pot}** koin!", color=discord.Color.gold())
             await self.message.edit(content=None, embed=embed, view=None)
             self.stop()
-            await interaction.response.send_message("Permainan selesai!", ephemeral=True)
+            msg = await interaction.followup.send("Permainan selesai! Pesan ini akan hilang.", ephemeral=True)
+            asyncio.create_task(self._delete_msg_after(msg, 3))
             return
 
         # Efek Spesial
@@ -1136,11 +1179,13 @@ class UnoGameView(discord.ui.View):
             self.game.hands[next_p.id].extend(drawn)
             self.game.next_turn() # Skip player yang draw
             msg += f" {next_p.mention} mengambil 4 kartu dan dilewati!"
-
+        
+        self.game.last_action = msg
         self.game.next_turn()
-        await self.message.edit(content=msg, embed=self.update_embed(), view=self)
-        if not interaction.response.is_done():
-            await interaction.response.send_message("Kartu dimainkan.", ephemeral=True)
+        next_player = self.game.players[self.game.turn_index]
+        await self.message.edit(content=f"Giliranmu, {next_player.mention}!", embed=self.update_embed(), view=self)
+        msg = await interaction.followup.send("Kartu dimainkan.", ephemeral=True)
+        asyncio.create_task(self._delete_msg_after(msg, 3))
 
     @discord.ui.button(label="Mainkan Giliran", style=discord.ButtonStyle.primary)
     async def play_turn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1148,8 +1193,77 @@ class UnoGameView(discord.ui.View):
             await interaction.response.send_message("Bukan giliranmu!", ephemeral=True)
             return
         
-        view = UnoPlayView(self.game, self)
-        await interaction.response.send_message("Pilih tindakan:", view=view, ephemeral=True)
+        # Buat view dengan opsi yang bisa dimainkan
+        play_view = UnoPlayView(self.game, self)
+
+        # Buat pesan yang lebih informatif
+        hand = self.game.hands[interaction.user.id]
+        hand_str = " | ".join(str(c) for c in hand) if hand else "Tidak ada kartu."
+        
+        embed = discord.Embed(title="Giliranmu!", color=interaction.user.color)
+        embed.description = "**Kartu di Tanganmu:**\n" + hand_str
+        embed.set_footer(text="Pilih kartu yang bisa dimainkan dari menu di bawah, atau ambil kartu baru.")
+
+        await interaction.response.send_message(embed=embed, view=play_view, ephemeral=True)
+
+    @discord.ui.button(label="Lihat Kartu Saya", style=discord.ButtonStyle.secondary, emoji="🎴")
+    async def view_cards_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in self.game.hands:
+            await send_auto_delete(interaction, "Kamu tidak ada dalam permainan ini!", delay=3, ephemeral=True)
+            return
+
+        hand = self.game.hands.get(interaction.user.id, [])
+        hand_str = " | ".join(str(c) for c in hand) if hand else "Kamu tidak punya kartu."
+        
+        embed = discord.Embed(title="Kartu di Tanganmu", description=hand_str, color=interaction.user.color)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(label="Menyerah", style=discord.ButtonStyle.danger, emoji="🏳️")
+    async def surrender_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id not in self.game.hands:
+            await send_auto_delete(interaction, "Kamu tidak ada dalam permainan ini!", delay=3, ephemeral=True)
+            return
+
+        player = interaction.user
+        
+        # Cari index player
+        player_idx = -1
+        for i, p in enumerate(self.game.players):
+            if p.id == player.id:
+                player_idx = i
+                break
+        
+        if player_idx == -1: return
+
+        # Hapus player
+        removed_player = self.game.players.pop(player_idx)
+        del self.game.hands[removed_player.id]
+
+        # Adjust turn index
+        if player_idx < self.game.turn_index:
+            self.game.turn_index -= 1
+        elif player_idx == self.game.turn_index:
+            if self.game.direction == -1:
+                self.game.turn_index -= 1
+        
+        if self.game.players:
+            self.game.turn_index %= len(self.game.players)
+
+        if len(self.game.players) == 1:
+            winner = self.game.players[0]
+            winner_data = await bot.db.get_user_data(winner.id)
+            await bot.db.update_user_balance(winner.id, winner_data['coins'] + self.game.pot)
+            
+            embed = discord.Embed(title="🏆 UNO WINNER!", description=f"{removed_player.mention} menyerah!\nSelamat {winner.mention}! Kamu memenangkan permainan dan mengambil seluruh pot sebesar **{self.game.pot}** koin!", color=discord.Color.gold())
+            await self.message.edit(content=None, embed=embed, view=None)
+            self.stop()
+            await send_auto_delete(interaction, "Kamu menyerah.", delay=3, ephemeral=True)
+            return
+
+        self.game.last_action = f"{removed_player.mention} menyerah dan keluar."
+        next_player = self.game.players[self.game.turn_index]
+        await self.message.edit(content=f"Giliranmu, {next_player.mention}!", embed=self.update_embed(), view=self)
+        await send_auto_delete(interaction, "Kamu telah menyerah dari permainan.", delay=3, ephemeral=True)
 
 class UnoLobbyView(discord.ui.View):
     def __init__(self, host, bet):
@@ -1177,11 +1291,12 @@ class UnoLobbyView(discord.ui.View):
 
     @discord.ui.button(label="Mulai Game", style=discord.ButtonStyle.primary)
     async def start(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if interaction.user != self.host:
-            await interaction.response.send_message("Hanya host yang bisa memulai game.", ephemeral=True)
+        # FIX: Gunakan ID untuk membandingkan host
+        if interaction.user.id != self.host.id:
+            await send_auto_delete(interaction, "Hanya host yang bisa memulai game.", delay=3, ephemeral=True)
             return
         if len(self.players) < 2:
-            await interaction.response.send_message("Butuh minimal 2 pemain!", ephemeral=True)
+            await send_auto_delete(interaction, "Butuh minimal 2 pemain!", delay=3, ephemeral=True)
             return
 
         # Potong saldo semua pemain
@@ -1213,8 +1328,10 @@ class UnoLobbyView(discord.ui.View):
 
         game_view = UnoGameView(game)
         embed = game_view.update_embed()
-        await interaction.response.edit_message(content="Game Dimulai!", embed=embed, view=game_view)
+        first_player = game.players[game.turn_index]
+        await interaction.response.edit_message(content=f"Game Dimulai! Giliran pertama: {first_player.mention}", embed=embed, view=game_view)
         game_view.message = await interaction.original_response()
+
 
     def create_embed(self):
         embed = discord.Embed(title="UNO Lobby", description=f"Host: {self.host.mention}\nTaruhan: **{self.bet}** koin\n\n**Pemain ({len(self.players)}/4):**", color=discord.Color.orange())
@@ -1227,7 +1344,7 @@ class UnoLobbyView(discord.ui.View):
 async def play_uno(interaction: discord.Interaction, taruhan: app_commands.Range[int, 10]):
     user_data = await bot.db.get_user_data(interaction.user.id)
     if user_data['coins'] < taruhan:
-        await interaction.response.send_message("Koinmu tidak cukup untuk membuat lobby ini.", ephemeral=True)
+        await send_auto_delete(interaction, "Koinmu tidak cukup untuk membuat lobby ini.", delay=5, ephemeral=True)
         return
 
     view = UnoLobbyView(interaction.user, taruhan)
@@ -1252,7 +1369,7 @@ class SlotMachineView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author.id:
-            await interaction.response.send_message("Ini bukan permainanmu!", ephemeral=True)
+            await send_auto_delete(interaction, "Ini bukan permainanmu!", delay=3)
             return False
         return True
 
@@ -1321,7 +1438,7 @@ class SlotMachineView(discord.ui.View):
 async def slot_machine(interaction: discord.Interaction, taruhan: app_commands.Range[int, 1]):
     user_data = await bot.db.get_user_data(interaction.user.id)
     if user_data['coins'] < taruhan:
-        await interaction.response.send_message("❌ Koinmu tidak cukup untuk taruhan awal ini!", ephemeral=True)
+        await send_auto_delete(interaction, "❌ Koinmu tidak cukup untuk taruhan awal ini!", delay=5)
         return
     
     view = SlotMachineView(interaction.user, taruhan)
@@ -1336,7 +1453,7 @@ async def slot_machine(interaction: discord.Interaction, taruhan: app_commands.R
 async def guess_number(interaction: discord.Interaction, taruhan: app_commands.Range[int, 1], tebakan: app_commands.Range[int, 1, 10]):
     user_data = await bot.db.get_user_data(interaction.user.id)
     if user_data['coins'] < taruhan:
-        await interaction.response.send_message("❌ Koinmu tidak cukup untuk taruhan ini!", ephemeral=True)
+        await send_auto_delete(interaction, "❌ Koinmu tidak cukup untuk taruhan ini!", delay=5)
         return
 
     # Langsung potong taruhan untuk game ini
@@ -1375,7 +1492,7 @@ async def give_coins(interaction: discord.Interaction, user: discord.User, amoun
     # Global error handler akan mengirim pesan jika pengguna non-owner mencoba.
     
     if user.bot:
-        await interaction.response.send_message("❌ Tidak bisa memberikan koin kepada bot.", ephemeral=True)
+        await send_auto_delete(interaction, "❌ Tidak bisa memberikan koin kepada bot.", delay=5)
         return
 
     user_data = await bot.db.get_user_data(user.id)
@@ -1383,7 +1500,7 @@ async def give_coins(interaction: discord.Interaction, user: discord.User, amoun
     
     await bot.db.update_user_balance(user.id, new_balance)
     
-    await interaction.response.send_message(f"✅ Berhasil mengubah saldo {user.mention} sebesar `{amount}` koin. Saldo barunya sekarang adalah **{new_balance}** koin.", ephemeral=True)
+    await send_auto_delete(interaction, f"✅ Berhasil mengubah saldo {user.mention} sebesar `{amount}` koin. Saldo barunya sekarang adalah **{new_balance}** koin.", delay=5)
 
 bot.tree.add_command(admin_group)
 
@@ -1395,7 +1512,7 @@ async def profile(interaction: discord.Interaction, user: discord.User = None):
     target_user = user or interaction.user
 
     if target_user.bot:
-        await interaction.response.send_message("🤖 Bot tidak memiliki profil!", ephemeral=True)
+        await send_auto_delete(interaction, "🤖 Bot tidak memiliki profil!", delay=3)
         return
 
     user_data = await bot.db.get_user_data(target_user.id)
@@ -1446,10 +1563,10 @@ async def rep(interaction: discord.Interaction, user: discord.User):
     receiver = user
 
     if giver.id == receiver.id:
-        await interaction.response.send_message("❌ Anda tidak bisa memberikan reputasi untuk diri sendiri!", ephemeral=True)
+        await send_auto_delete(interaction, "❌ Anda tidak bisa memberikan reputasi untuk diri sendiri!", delay=5)
         return
     if receiver.bot:
-        await interaction.response.send_message("❌ Anda tidak bisa memberikan reputasi kepada bot!", ephemeral=True)
+        await send_auto_delete(interaction, "❌ Anda tidak bisa memberikan reputasi kepada bot!", delay=5)
         return
 
     giver_data = await bot.db.get_user_data(giver.id)
@@ -1461,23 +1578,40 @@ async def rep(interaction: discord.Interaction, user: discord.User):
         time_left = cooldown - (now - last_rep_time)
         hours, remainder = divmod(int(time_left.total_seconds()), 3600)
         minutes, _ = divmod(remainder, 60)
-        await interaction.response.send_message(f"⏳ Anda harus menunggu **{hours} jam {minutes} menit** lagi untuk bisa memberikan reputasi.", ephemeral=True)
+        await send_auto_delete(interaction, f"⏳ Anda harus menunggu **{hours} jam {minutes} menit** lagi untuk bisa memberikan reputasi.", delay=5)
         return
 
     await bot.db.give_reputation(giver_id=giver.id, receiver_id=receiver.id)
     await interaction.response.send_message(f"✅ Anda telah memberikan 1 poin reputasi kepada {receiver.mention}!")
 
 @bot.tree.command(name="leaderboard", description="Lihat papan peringkat server.")
-@app_commands.describe(kategori="Pilih kategori papan peringkat yang ingin dilihat.")
+@app_commands.describe(
+    kategori="Pilih kategori papan peringkat yang ingin dilihat.",
+    scope="Pilih lingkup leaderboard: Global (semua server) atau Server (server ini saja)."
+)
 @app_commands.choices(kategori=[
     app_commands.Choice(name="Koin Terbanyak", value="coins"),
     app_commands.Choice(name="Level Tertinggi", value="level"),
     app_commands.Choice(name="Reputasi Teratas", value="reputation"),
+], scope=[
+    app_commands.Choice(name="Global 🌍", value="global"),
+    app_commands.Choice(name="Server 🏠", value="server")
 ])
-async def leaderboard(interaction: discord.Interaction, kategori: app_commands.Choice[str]):
+async def leaderboard(interaction: discord.Interaction, kategori: app_commands.Choice[str], scope: app_commands.Choice[str] = None):
     await interaction.response.defer(ephemeral=False) # Menunda respons karena query DB bisa lama
 
-    leaderboard_data = await bot.db.get_leaderboard(sort_by=kategori.value, limit=10)
+    # Default scope ke global jika tidak dipilih
+    scope_value = scope.value if scope else "global"
+    
+    user_ids_filter = None
+    if scope_value == "server":
+        if not interaction.guild:
+            await interaction.followup.send("❌ Leaderboard server hanya bisa digunakan di dalam server.")
+            return
+        # Ambil list ID member di server ini (exclude bot)
+        user_ids_filter = [member.id for member in interaction.guild.members if not member.bot]
+
+    leaderboard_data = await bot.db.get_leaderboard(sort_by=kategori.value, limit=10, user_ids=user_ids_filter)
 
     if not leaderboard_data:
         await interaction.followup.send("Belum ada data untuk ditampilkan di papan peringkat.")
@@ -1495,8 +1629,10 @@ async def leaderboard(interaction: discord.Interaction, kategori: app_commands.C
         "reputation": "rep"
     }
 
+    scope_title = "Global 🌍" if scope_value == "global" else f"Server {interaction.guild.name} 🏠"
+
     embed = discord.Embed(
-        title=title_map.get(kategori.value, "Papan Peringkat"),
+        title=f"{title_map.get(kategori.value, 'Papan Peringkat')} - {scope_title}",
         color=discord.Color.gold()
     )
 
@@ -1512,12 +1648,45 @@ async def leaderboard(interaction: discord.Interaction, kategori: app_commands.C
         description += f"{emoji} {user.mention} - **{value}** {unit_map.get(kategori.value)}\n"
 
     embed.description = description
-    embed.set_footer(text=f"Top 10 di server ini berdasarkan {kategori.name}")
+    embed.set_footer(text=f"Top 10 {scope_title} berdasarkan {kategori.name}")
 
     await interaction.followup.send(embed=embed)
 
+@bot.tree.command(name="pay", description="Transfer koin ke pengguna lain.")
+@app_commands.describe(
+    user="Pengguna yang akan menerima koin.",
+    amount="Jumlah koin yang ingin ditransfer (minimal 1)."
+)
+async def pay(interaction: discord.Interaction, user: discord.User, amount: app_commands.Range[int, 1]):
+    giver = interaction.user
+    receiver = user
+
+    # --- Validasi ---
+    if giver.id == receiver.id:
+        await send_auto_delete(interaction, "❌ Kamu tidak bisa mentransfer koin ke dirimu sendiri!", delay=5)
+        return
+    
+    if receiver.bot:
+        await send_auto_delete(interaction, "❌ Kamu tidak bisa mentransfer koin ke bot!", delay=5)
+        return
+
+    giver_data = await bot.db.get_user_data(giver.id)
+    
+    if giver_data['coins'] < amount:
+        await send_auto_delete(interaction, f"❌ Koinmu tidak cukup! Kamu hanya punya {giver_data['coins']} koin.", delay=5)
+        return
+
+    # --- Proses Transfer ---
+    receiver_data = await bot.db.get_user_data(receiver.id)
+    await bot.db.update_user_balance(giver.id, giver_data['coins'] - amount)
+    await bot.db.update_user_balance(receiver.id, receiver_data['coins'] + amount)
+
+    # --- Konfirmasi ---
+    embed = discord.Embed(title="💸 Transfer Berhasil", description=f"Kamu berhasil mentransfer **{amount}** koin kepada {receiver.mention}.", color=discord.Color.green())
+    embed.set_footer(text=f"Sisa koinmu: {giver_data['coins'] - amount}")
+    await interaction.response.send_message(embed=embed)
+
 if __name__ ==  "__main__":
-    # keep_alive() # Matikan baris ini jika menjalankan di laptop/PC lokal agar tidak error socket
     if TOKEN and DATABASE_URL:
         bot.run(TOKEN)
     else:

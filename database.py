@@ -136,16 +136,22 @@ class DatabaseManager:
             # Catat waktu cooldown untuk pemberi
             await connection.execute("UPDATE economy SET last_rep_time = $1 WHERE user_id = $2", datetime.datetime.now(datetime.timezone.utc), giver_id)
 
-    async def get_leaderboard(self, sort_by: str = 'coins', limit: int = 10):
+    async def get_leaderboard(self, sort_by: str = 'coins', limit: int = 10, user_ids: list = None):
         """Mengambil papan peringkat berdasarkan kriteria tertentu."""
         # Validasi untuk mencegah SQL injection
         if sort_by not in ['coins', 'level', 'reputation']:
             # Default ke koin jika input tidak valid
             sort_by = 'coins'
             
-        query = f"SELECT user_id, {sort_by} FROM economy ORDER BY {sort_by} DESC LIMIT $1"
+        if user_ids:
+            # Filter berdasarkan list user_id (untuk leaderboard server)
+            query = f"SELECT user_id, {sort_by} FROM economy WHERE user_id = ANY($1::bigint[]) ORDER BY {sort_by} DESC LIMIT $2"
+            args = (user_ids, limit)
+        else:
+            query = f"SELECT user_id, {sort_by} FROM economy ORDER BY {sort_by} DESC LIMIT $1"
+            args = (limit,)
         
         async with self._pool.acquire() as connection:
-            leaderboard_data = await connection.fetch(query, limit)
+            leaderboard_data = await connection.fetch(query, *args)
         
         return leaderboard_data
