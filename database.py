@@ -67,6 +67,18 @@ class DatabaseManager:
             await connection.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS reputation INT DEFAULT 0;")
             await connection.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS last_rep_time TIMESTAMPTZ;")
             await connection.execute("ALTER TABLE economy ADD COLUMN IF NOT EXISTS last_xp_time TIMESTAMPTZ;")
+            
+            # Tabel Statistik Game
+            await connection.execute("""
+                CREATE TABLE IF NOT EXISTS game_stats (
+                    user_id BIGINT,
+                    game_name TEXT,
+                    total_plays INT DEFAULT 0,
+                    weekly_plays INT DEFAULT 0,
+                    last_played TIMESTAMPTZ,
+                    PRIMARY KEY (user_id, game_name)
+                );
+            """)
             print("🛠️  Tabel 'economy' siap digunakan.")
 
     async def get_user_data(self, user_id: int):
@@ -95,6 +107,22 @@ class DatabaseManager:
                 await connection.execute("UPDATE economy SET coins = $1, last_daily = $2 WHERE user_id = $3", coins, last_daily, user_id)
             else:
                 await connection.execute("UPDATE economy SET coins = $1 WHERE user_id = $2", coins, user_id)
+
+    async def add_coins(self, user_id: int, amount: int):
+        """Menambah (atau mengurangi jika negatif) koin user secara atomik."""
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                "UPDATE economy SET coins = coins + $1 WHERE user_id = $2",
+                amount, user_id
+            )
+
+    async def process_daily_claim(self, user_id: int, reward: int, claim_time: datetime.datetime):
+        """Secara atomik menambahkan hadiah daily dan mengupdate timestamp."""
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                "UPDATE economy SET coins = coins + $1, last_daily = $2 WHERE user_id = $3",
+                reward, claim_time, user_id
+            )
 
     async def set_birthday(self, user_id: int, birthday_str: str):
         """Menyimpan tanggal ulang tahun user (format MM-DD)."""
@@ -155,3 +183,44 @@ class DatabaseManager:
             leaderboard_data = await connection.fetch(query, *args)
         
         return leaderboard_data
+
+    async def record_game_play(self, user_id: int, game_name: str):
+        """Mencatat aktivitas bermain game untuk statistik."""
+        now = datetime.datetime.now(datetime.timezone.utc)
+        async with self._pool.acquire() as connection:
+            # Cek data yang ada
+            row = await connection.fetchrow(
+                "SELECT weekly_plays, last_played FROM game_stats WHERE user_id = $1 AND game_name = $2",
+                user_id, game_name
+            )
+            
+            if row:
+                last_played = row['last_played']
+                weekly_plays = row['weekly_plays']
+                
+                # Reset mingguan (Cek apakah minggu ISO saat ini sama dengan minggu terakhir main)
+                if last_played and last_played.isocalendar()[:2] == now.isocalendar()[:2]:
+                    new_weekly = weekly_plays + 1
+                else:
+                    new_weekly = 1
+                
+                await connection.execute("""
+                    UPDATE game_stats 
+                    SET total_plays = total_plays + 1, weekly_plays = $1, last_played = $2
+                    WHERE user_id = $3 AND game_name = $4
+                """, new_weekly, now, user_id, game_name)
+            else:
+                await connection.execute("""
+                    INSERT INTO game_stats (user_id, game_name, total_plays, weekly_plays, last_played)
+                    VALUES ($1, $2, 1, 1, $3)
+                """, user_id, game_name, now)
+
+    async def get_game_stats(self, user_id: int):
+        """Mengambil statistik game user diurutkan dari yang paling sering dimainkan."""
+        async with self._pool.acquire() as connection:
+            return await connection.fetch("""
+                SELECT game_name, total_plays, weekly_plays 
+                FROM game_stats 
+                WHERE user_id = $1 
+                ORDER BY total_plays DESC
+            """, user_id)

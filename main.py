@@ -148,7 +148,17 @@ class MyBot(commands.Bot):
             xp_left_over = current_xp - xp_needed
             await self.db.update_level(user_id, new_level, xp_left_over)
             
-            await message.channel.send(f"🎉 Selamat, {message.author.mention}! Kamu telah mencapai **Level {new_level}**!")
+            # UI Level Up Baru
+            embed = discord.Embed(
+                title="🎉 LEVEL UP!",
+                description=f"Selamat {message.author.mention}, kamu telah naik ke **Level {new_level}**!",
+                color=discord.Color.gold()
+            )
+            embed.add_field(name="📈 Level", value=f"{current_level} ➔ **{new_level}**", inline=True)
+            embed.add_field(name="✨ XP", value=f"{xp_left_over} XP (Next: {new_level * 100})", inline=True)
+            embed.set_thumbnail(url=message.author.display_avatar.url)
+            embed.set_footer(text="Terus aktif untuk mencapai level berikutnya!")
+            await message.channel.send(embed=embed)
 
 bot = MyBot()
 
@@ -247,7 +257,7 @@ async def help_command(interaction: discord.Interaction):
             if cmd.name == "game":
                 for sub_cmd in sorted(cmd.commands, key=lambda c: c.name):
                     # Kategorikan game judi dan non-judi
-                    if sub_cmd.name in ["risktower", "energycore", "shadowdeal", "guessnumber", "slotmachine"]:
+                    if sub_cmd.name in ["risktower", "energycore", "shadowdeal", "guessnumber", "slotmachine", "blackjack", "balapan", "coinflip", "uno"]:
                         commands_by_category[category_map["Judi"]].append(f"`/{cmd.name} {sub_cmd.name}`: {sub_cmd.description}")
             elif cmd.name == "birthday":
                 for sub_cmd in sorted(cmd.commands, key=lambda c: c.name):
@@ -258,7 +268,7 @@ async def help_command(interaction: discord.Interaction):
                 commands_by_category[category_map["Game"]].append(f"`/{cmd.name}`: {cmd.description}")
             elif cmd.name == "rps":
                 commands_by_category[category_map["Judi"]].append(f"`/{cmd.name}`: {cmd.description}")
-            elif cmd.name in ["balance", "daily", "profile", "rep", "leaderboard", "pay"]:
+            elif cmd.name in ["cekkantong", "daily", "profile", "rep", "leaderboard", "pay"]:
                 commands_by_category[category_map["Sosial"]].append(f"`/{cmd.name}`: {cmd.description}")
             elif cmd.name not in ["help"]: # Jangan tampilkan command help di dalam help
                 commands_by_category[category_map["General"]].append(f"`/{cmd.name}`: {cmd.description}")
@@ -280,18 +290,20 @@ async def help_command(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed)
 
 # Command untuk mengecek saldo
-@bot.tree.command(name="balance", description="Cek saldo koin Anda.")
-async def balance(interaction: discord.Interaction):
+@bot.tree.command(name="cekkantong", description="Cek isi kantong koin Anda.")
+async def cekkantong(interaction: discord.Interaction):
     user_id = interaction.user.id
     
     # Ambil data dari database
     user_data = await bot.db.get_user_data(user_id)
     
     embed = discord.Embed(
-        title=f"💰 Saldo Koin {interaction.user.display_name}",
-        description=f"Anda saat ini memiliki **{user_data['coins']}** koin.",
+        title=f"🎒 Isi Kantong {interaction.user.display_name}",
+        description=f"Saldo saat ini:",
         color=discord.Color.gold()
     )
+    embed.add_field(name="Koin", value=f"**{user_data['coins']:,}** 💰", inline=False)
+    embed.set_footer(text="Gunakan koinmu dengan bijak!", icon_url=interaction.user.display_avatar.url)
     await interaction.response.send_message(embed=embed)
 
 # Command untuk klaim hadiah harian
@@ -319,12 +331,16 @@ async def daily(interaction: discord.Interaction):
 
     # Logika jika cooldown sudah selesai atau klaim pertama kali
     reward = random.randint(100, 500)
-    new_balance = user_data['coins'] + reward
+    # BUG FIX: Gunakan metode atomik untuk menambahkan koin dan mengupdate timestamp
+    await bot.db.process_daily_claim(user_id, reward, now)
     
-    # Update database
-    await bot.db.update_user_balance(user_id, new_balance, now)
-    
-    await interaction.response.send_message(f"🎉 Anda berhasil mengklaim hadiah harian sebesar **{reward}** koin! Saldo Anda sekarang adalah **{new_balance}** koin.")
+    embed = discord.Embed(
+        title="📅 Hadiah Harian",
+        description=f"Kamu telah mengklaim hadiah harianmu!",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="Diterima", value=f"**+{reward}** 💰", inline=True)
+    await interaction.response.send_message(embed=embed)
 
 # --- Fitur Ulang Tahun ---
 
@@ -367,6 +383,7 @@ bot.tree.add_command(birthday_group)
 
 @bot.tree.command(name="tebakkata", description="Main tebak kata dari huruf yang diacak.")
 async def tebak_kata(interaction: discord.Interaction):
+    await bot.db.record_game_play(interaction.user.id, "Tebak Kata")
     kata_asli = random.choice(KATA_LIST)
     huruf_acak = ''.join(random.sample(kata_asli, len(kata_asli)))
 
@@ -385,9 +402,8 @@ async def tebak_kata(interaction: discord.Interaction):
         msg = await bot.wait_for('message', check=check, timeout=30.0)
         
         if msg.content.lower() == kata_asli:
-            user_data = await bot.db.get_user_data(interaction.user.id)
-            new_balance = user_data['coins'] + TEBAK_KATA_REWARD
-            await bot.db.update_user_balance(interaction.user.id, new_balance)
+            # BUG FIX: Gunakan add_coins untuk transaksi atomik
+            await bot.db.add_coins(interaction.user.id, TEBAK_KATA_REWARD)
             await send_auto_delete(interaction, f"🎉 Benar sekali! Jawabannya adalah **{kata_asli}**. Kamu mendapatkan **{TEBAK_KATA_REWARD}** koin!", delay=10, ephemeral=False)
         else:
             await send_auto_delete(interaction, f"❌ Salah! Jawaban yang benar adalah **{kata_asli}**. Coba lagi lain kali!", delay=10, ephemeral=False)
@@ -397,6 +413,7 @@ async def tebak_kata(interaction: discord.Interaction):
 
 @bot.tree.command(name="mathbattle", description="Selesaikan soal matematika dalam 10 detik!")
 async def math_battle(interaction: discord.Interaction):
+    await bot.db.record_game_play(interaction.user.id, "Math Battle")
     ops = ['+', '-']
     op = random.choice(ops)
     num1 = random.randint(10, 99)
@@ -416,9 +433,8 @@ async def math_battle(interaction: discord.Interaction):
         msg = await bot.wait_for('message', check=check, timeout=10.0)
         
         if int(msg.content) == jawaban:
-            user_data = await bot.db.get_user_data(interaction.user.id)
-            new_balance = user_data['coins'] + MATH_BATTLE_REWARD
-            await bot.db.update_user_balance(interaction.user.id, new_balance)
+            # BUG FIX: Gunakan add_coins untuk transaksi atomik
+            await bot.db.add_coins(interaction.user.id, MATH_BATTLE_REWARD)
             await send_auto_delete(interaction, f"🧠 Cerdas! Jawabannya **{jawaban}**. Kamu dapat **{MATH_BATTLE_REWARD}** koin!", delay=10, ephemeral=False)
         else:
             await send_auto_delete(interaction, f"❌ Salah! Jawaban yang benar adalah **{jawaban}**.", delay=10, ephemeral=False)
@@ -430,6 +446,7 @@ async def math_battle(interaction: discord.Interaction):
 
 @bot.tree.command(name="higherlower", description="Tebak angka rahasia antara 1-100.")
 async def higher_lower(interaction: discord.Interaction):
+    await bot.db.record_game_play(interaction.user.id, "Higher Lower")
     angka_rahasia = random.randint(1, 100)
     kesempatan = 5
 
@@ -444,9 +461,8 @@ async def higher_lower(interaction: discord.Interaction):
             tebakan = int(msg.content)
 
             if tebakan == angka_rahasia:
-                user_data = await bot.db.get_user_data(interaction.user.id)
-                new_balance = user_data['coins'] + HIGHER_LOWER_REWARD
-                await bot.db.update_user_balance(interaction.user.id, new_balance)
+                # BUG FIX: Gunakan add_coins untuk transaksi atomik
+                await bot.db.add_coins(interaction.user.id, HIGHER_LOWER_REWARD)
                 await send_auto_delete(interaction, f"🏆 **HEBAT!** Kamu berhasil menebak angkanya, yaitu **{angka_rahasia}**! Kamu memenangkan **{HIGHER_LOWER_REWARD}** koin!", delay=15, ephemeral=False)
                 return # Keluar dari fungsi jika sudah menang
             
@@ -531,12 +547,9 @@ class RPSBattleView(discord.ui.View):
                 await self.message.edit(content=f"⚖️ **Seri!** Keduanya memilih **{p1_choice}**. Taruhan dikembalikan.", view=self)
 
     async def end_game(self, winner: discord.User, loser: discord.User, reason: str):
-        # Transfer coins
-        winner_data = await bot.db.get_user_data(winner.id)
-        loser_data = await bot.db.get_user_data(loser.id)
-
-        await bot.db.update_user_balance(winner.id, winner_data['coins'] + self.bet)
-        await bot.db.update_user_balance(loser.id, loser_data['coins'] - self.bet)
+        # BUG FIX: Gunakan add_coins untuk transfer atomik
+        await bot.db.add_coins(winner.id, self.bet)
+        await bot.db.add_coins(loser.id, -self.bet)
 
         final_message = f"🎉 {winner.mention} **Menang**!\n{reason}\n\n{winner.mention} memenangkan **{self.bet}** koin dari {loser.mention}!"
         await self.message.edit(content=final_message, view=self)
@@ -586,6 +599,10 @@ class RPSChallengeView(discord.ui.View):
             await interaction.response.edit_message(content=f"Gagal memulai: Kamu tidak punya cukup koin untuk taruhan ini.", view=None)
             self.stop()
             return
+
+        # Catat statistik game
+        await bot.db.record_game_play(self.initiator.id, "Batu Gunting Kertas")
+        await bot.db.record_game_play(self.opponent.id, "Batu Gunting Kertas")
 
         game_view = RPSBattleView(self.initiator, self.opponent, self.bet)
         await interaction.response.edit_message(content=f"Tantangan diterima! {self.initiator.mention} dan {self.opponent.mention}, silakan pilih gerakan kalian. Waktu 30 detik!", view=game_view)
@@ -662,23 +679,41 @@ class RiskTowerView(discord.ui.View):
 
     def create_embed(self, status_message: str, is_game_over: bool = False) -> discord.Embed:
         """Membuat dan memformat embed untuk game."""
-        tower_visual = ""
+        tower_visual = []
         for i in range(self.max_level, 0, -1):
+            chance, mult = self.tower_levels[i]
+            reward = int(self.bet * mult)
+            
             if i == self.level:
-                tower_visual += f"Lantai {i}: 🧗\n"
+                # Level saat ini (baru saja dicapai)
+                line = f"🧗 L{i} | x{mult:<3} | {reward} 💰 < KAMU"
             elif i < self.level:
-                tower_visual += f"Lantai {i}: 🟩\n"
+                # Level yang sudah dilewati
+                line = f"✅ L{i} | x{mult:<3} | LEWATI"
             else:
-                tower_visual += f"Lantai {i}: ⬜\n"
-        tower_visual += "Dasar: 🏃"
+                # Level di atas
+                line = f"🔒 L{i} | x{mult:<3} | {reward} 💰 ({int(chance*100)}%)"
+            
+            tower_visual.append(line)
+        
+        visual_str = "\n".join(tower_visual)
+        visual_str += "\n➖➖➖➖➖➖➖➖➖➖\n🏁 DASAR MENARA"
 
-        color = discord.Color.red() if "kalah" in status_message.lower() else (discord.Color.green() if is_game_over else discord.Color.blue())
-        embed = discord.Embed(title="🗼 Risk Tower", description=status_message, color=color)
-        embed.add_field(name="Visual Menara", value=f"```\n{tower_visual}\n```", inline=False)
-        embed.add_field(name="Taruhan Awal", value=f"{self.bet} koin")
-        embed.add_field(name="Lantai Saat Ini", value=self.level)
-        embed.add_field(name="Hadiah Jika Cash Out", value=f"**{self.current_reward} koin**")
-        embed.set_footer(text=f"Bermain sebagai: {self.author.display_name}")
+        color = discord.Color.red() if "kalah" in status_message.lower() or "runtuh" in status_message.lower() else (discord.Color.green() if is_game_over else discord.Color.blue())
+        
+        embed = discord.Embed(title="🗼 RISK TOWER", description=status_message, color=color)
+        embed.add_field(name="Menara", value=f"```\n{visual_str}\n```", inline=False)
+        
+        if not is_game_over:
+            embed.add_field(name="💰 Cash Out Sekarang", value=f"**{self.current_reward}** koin", inline=True)
+            if self.level < self.max_level:
+                next_mult = self.tower_levels[self.level + 1][1]
+                next_reward = int(self.bet * next_mult)
+                embed.add_field(name="🚀 Hadiah Berikutnya", value=f"**{next_reward}** koin", inline=True)
+        else:
+            embed.add_field(name="Hasil Akhir", value=f"**{self.current_reward}** koin", inline=True)
+            
+        embed.set_footer(text=f"Player: {self.author.display_name} | Bet: {self.bet}")
         return embed
 
     async def end_game(self, interaction: discord.Interaction, message: str):
@@ -708,8 +743,8 @@ class RiskTowerView(discord.ui.View):
             self.current_reward = int(self.bet * multiplier)
             
             if self.level == self.max_level: # Mencapai puncak
-                user_data = await bot.db.get_user_data(self.author.id)
-                await bot.db.update_user_balance(self.author.id, user_data['coins'] + self.current_reward)
+                # BUG FIX: Gunakan add_coins untuk memastikan saldo bertambah dengan benar
+                await bot.db.add_coins(self.author.id, self.current_reward)
                 await self.end_game(interaction, f"🏆 LUAR BIASA! Kamu mencapai puncak dan memenangkan **{self.current_reward}** koin!")
             else: # Lanjut
                 button.disabled = False
@@ -721,8 +756,8 @@ class RiskTowerView(discord.ui.View):
     @discord.ui.button(label="Cash Out", style=discord.ButtonStyle.success, emoji="💰")
     async def cashout(self, interaction: discord.Interaction, button: discord.ui.Button):
         if self.current_reward > 0:
-            user_data = await bot.db.get_user_data(self.author.id)
-            await bot.db.update_user_balance(self.author.id, user_data['coins'] + self.current_reward)
+            # BUG FIX: Gunakan add_coins
+            await bot.db.add_coins(self.author.id, self.current_reward)
             await self.end_game(interaction, f"✅ Aman! Kamu berhasil cash out dan mendapatkan **{self.current_reward}** koin.")
         else:
             await self.end_game(interaction, "Kamu turun tanpa membawa apa-apa.")
@@ -735,8 +770,9 @@ async def risk_tower(interaction: discord.Interaction, taruhan: app_commands.Ran
         await send_auto_delete(interaction, "❌ Koinmu tidak cukup untuk taruhan ini!", delay=5)
         return
  
-    # Langsung potong taruhan
-    await bot.db.update_user_balance(interaction.user.id, user_data['coins'] - taruhan)
+    # Langsung potong taruhan menggunakan add_coins (negatif) agar lebih aman
+    await bot.db.add_coins(interaction.user.id, -taruhan)
+    await bot.db.record_game_play(interaction.user.id, "Risk Tower")
 
     view = RiskTowerView(interaction.user, taruhan)
     embed = view.create_embed("Selamat datang di Risk Tower! Tekan 'Climb' untuk memulai.")
@@ -806,8 +842,8 @@ class EnergyCoreView(discord.ui.View):
 
         if self.charge >= 100:
             reward = int(self.bet * self.multiplier)
-            user_data = await bot.db.get_user_data(self.author.id)
-            await bot.db.update_user_balance(self.author.id, user_data['coins'] + reward)
+            # BUG FIX: Gunakan add_coins
+            await bot.db.add_coins(self.author.id, reward)
             await self.end_game(interaction, f"🔋 DAYA PENUH! Kamu berhasil mengumpulkan **{reward}** koin!")
         else:
             self.children[0].disabled = False
@@ -819,8 +855,7 @@ class EnergyCoreView(discord.ui.View):
     async def stop_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         reward = int(self.bet * self.multiplier)
         if reward > self.bet:
-            user_data = await bot.db.get_user_data(self.author.id)
-            await bot.db.update_user_balance(self.author.id, user_data['coins'] + reward)
+            await bot.db.add_coins(self.author.id, reward) # BUG FIX: Gunakan add_coins
             await self.end_game(interaction, f"✅ Berhasil! Kamu mengamankan inti dan mendapatkan **{reward}** koin.")
         else:
             # Kembalikan bet jika tidak ada profit
@@ -836,7 +871,9 @@ async def energy_core(interaction: discord.Interaction, taruhan: app_commands.Ra
         await send_auto_delete(interaction, "❌ Koinmu tidak cukup untuk taruhan ini!", delay=5)
         return
  
-    await bot.db.update_user_balance(interaction.user.id, user_data['coins'] - taruhan)
+    # BUG FIX: Gunakan add_coins untuk transaksi atomik
+    await bot.db.add_coins(interaction.user.id, -taruhan)
+    await bot.db.record_game_play(interaction.user.id, "Energy Core")
     view = EnergyCoreView(interaction.user, taruhan)
     embed = view.create_embed("Inti energi stabil. Tekan 'Charge' untuk memulai.")
     await interaction.response.send_message(embed=embed, view=view)
@@ -887,8 +924,8 @@ class ShadowDealView(discord.ui.View):
         if final_outcome == 0:
             await interaction.edit_original_response(content=f"🔮 Sosok itu membuka kartumu... **ZONK**! Kamu kehilangan **{self.bet}** koin.")
         else:
-            user_data = await bot.db.get_user_data(self.author.id)
-            await bot.db.update_user_balance(self.author.id, user_data['coins'] + reward)
+            # BUG FIX: Gunakan add_coins
+            await bot.db.add_coins(self.author.id, reward)
             await interaction.edit_original_response(content=f"🔮 Sosok itu membuka kartumu... **JACKPOT**! Kamu memenangkan **{reward}** koin!")
         self.stop()
 
@@ -912,7 +949,9 @@ async def shadow_deal(interaction: discord.Interaction, taruhan: app_commands.Ra
         await send_auto_delete(interaction, "❌ Koinmu tidak cukup untuk taruhan ini!", delay=5)
         return
  
-    await bot.db.update_user_balance(interaction.user.id, user_data['coins'] - taruhan)
+    # BUG FIX: Gunakan add_coins untuk transaksi atomik
+    await bot.db.add_coins(interaction.user.id, -taruhan)
+    await bot.db.record_game_play(interaction.user.id, "Shadow Deal")
     view = ShadowDealView(interaction.user, taruhan)
     embed = discord.Embed(title="🎭 Shadow Deal", description=f"Sosok misterius muncul dari bayangan. Dia menawarimu sebuah permainan.\n\n\"Pilih satu dari tiga kartu ini,\" bisiknya. \"Nasibmu ada di tanganmu.\"\n\nKamu mempertaruhkan **{taruhan}** koin.", color=discord.Color.purple())
     await interaction.response.send_message(embed=embed, view=view)
@@ -1146,8 +1185,8 @@ class UnoGameView(discord.ui.View):
         # Cek Menang
         if len(self.game.hands[player.id]) == 0:
             # WINNER
-            winner_data = await bot.db.get_user_data(player.id)
-            await bot.db.update_user_balance(player.id, winner_data['coins'] + self.game.pot)
+            # BUG FIX: Gunakan add_coins
+            await bot.db.add_coins(player.id, self.game.pot)
             
             embed = discord.Embed(title="🏆 UNO WINNER!", description=f"Selamat {player.mention}! Kamu memenangkan permainan dan mengambil seluruh pot sebesar **{self.game.pot}** koin!", color=discord.Color.gold())
             await self.message.edit(content=None, embed=embed, view=None)
@@ -1251,8 +1290,8 @@ class UnoGameView(discord.ui.View):
 
         if len(self.game.players) == 1:
             winner = self.game.players[0]
-            winner_data = await bot.db.get_user_data(winner.id)
-            await bot.db.update_user_balance(winner.id, winner_data['coins'] + self.game.pot)
+            # BUG FIX: Gunakan add_coins
+            await bot.db.add_coins(winner.id, self.game.pot)
             
             embed = discord.Embed(title="🏆 UNO WINNER!", description=f"{removed_player.mention} menyerah!\nSelamat {winner.mention}! Kamu memenangkan permainan dan mengambil seluruh pot sebesar **{self.game.pot}** koin!", color=discord.Color.gold())
             await self.message.edit(content=None, embed=embed, view=None)
@@ -1302,9 +1341,10 @@ class UnoLobbyView(discord.ui.View):
         # Potong saldo semua pemain
         pot = 0
         for p in self.players:
-            p_data = await bot.db.get_user_data(p.id)
-            await bot.db.update_user_balance(p.id, p_data['coins'] - self.bet)
+            # BUG FIX: Gunakan add_coins untuk transaksi atomik
+            await bot.db.add_coins(p.id, -self.bet)
             pot += self.bet
+            await bot.db.record_game_play(p.id, "UNO")
 
         # Setup Game
         game = UnoGame()
@@ -1397,7 +1437,9 @@ class SlotMachineView(discord.ui.View):
             await interaction.edit_original_response(content="❌ Koinmu tidak cukup untuk memutar lagi.", embed=None, view=self)
             self.stop()
             return
-        await bot.db.update_user_balance(self.author.id, user_data['coins'] - self.bet)
+        # BUG FIX: Gunakan add_coins
+        await bot.db.add_coins(self.author.id, -self.bet)
+        await bot.db.record_game_play(self.author.id, "Slot Machine")
 
         for _ in range(3):
             self.reels = [random.choice(self.emojis) for _ in range(3)]
@@ -1416,8 +1458,8 @@ class SlotMachineView(discord.ui.View):
             if multiplier > 0:
                 win_amount = int(self.bet * multiplier)
                 status = f"🎉 **JACKPOT!** Kamu memenangkan **{win_amount}** koin!"
-                current_data = await bot.db.get_user_data(self.author.id)
-                await bot.db.update_user_balance(self.author.id, current_data['coins'] + win_amount)
+                # BUG FIX: Gunakan add_coins
+                await bot.db.add_coins(self.author.id, win_amount)
         
         embed = self.create_embed(status, win_amount)
         spin_button.disabled = False
@@ -1456,22 +1498,305 @@ async def guess_number(interaction: discord.Interaction, taruhan: app_commands.R
         await send_auto_delete(interaction, "❌ Koinmu tidak cukup untuk taruhan ini!", delay=5)
         return
 
-    # Langsung potong taruhan untuk game ini
-    await bot.db.update_user_balance(interaction.user.id, user_data['coins'] - taruhan)
+    # BUG FIX: Gunakan add_coins untuk transaksi atomik
+    await bot.db.add_coins(interaction.user.id, -taruhan)
+    await bot.db.record_game_play(interaction.user.id, "Tebak Angka")
 
     angka_bot = random.randint(1, 10)
     reward_multiplier = 5
     reward = taruhan * reward_multiplier
 
     if tebakan == angka_bot:
-        # Menang, kembalikan taruhan + hadiah
-        await bot.db.update_user_balance(interaction.user.id, user_data['coins'] - taruhan + reward)
+        # BUG FIX: Gunakan add_coins untuk menambahkan hadiah
+        await bot.db.add_coins(interaction.user.id, reward)
         embed = discord.Embed(title="🎉 JACKPOT! 🎉", description=f"Tebakanmu **{tebakan}** benar! Angka rahasianya adalah **{angka_bot}**.\nKamu memenangkan **{reward}** koin!", color=discord.Color.green())
     else:
         # Kalah, taruhan sudah dipotong
         embed = discord.Embed(title="💥 ZONK! 💥", description=f"Tebakanmu **{tebakan}** salah. Angka rahasianya adalah **{angka_bot}**.\nKamu kehilangan **{taruhan}** koin.", color=discord.Color.red())
     
     await interaction.response.send_message(embed=embed)
+
+### GAME 6: BLACKJACK
+
+class BlackjackView(discord.ui.View):
+    def __init__(self, author: discord.User, bet: int):
+        super().__init__(timeout=180.0)
+        self.author = author
+        self.bet = bet
+        self.deck = []
+        self.player_hand = []
+        self.dealer_hand = []
+        self.create_deck()
+        self.deal_initial()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author.id:
+            await send_auto_delete(interaction, "Ini bukan permainanmu!", delay=3)
+            return False
+        return True
+
+    def create_deck(self):
+        suits = ['♠️', '♥️', '♣️', '♦️']
+        ranks = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
+        self.deck = [(rank, suit) for suit in suits for rank in ranks]
+        random.shuffle(self.deck)
+
+    def draw_card(self):
+        return self.deck.pop()
+
+    def deal_initial(self):
+        self.player_hand = [self.draw_card(), self.draw_card()]
+        self.dealer_hand = [self.draw_card(), self.draw_card()]
+
+    def calculate_score(self, hand):
+        score = 0
+        aces = 0
+        for rank, _ in hand:
+            if rank in ['J', 'Q', 'K']:
+                score += 10
+            elif rank == 'A':
+                aces += 1
+                score += 11
+            else:
+                score += int(rank)
+        
+        while score > 21 and aces:
+            score -= 10
+            aces -= 1
+        return score
+
+    def format_hand(self, hand, hide_second=False):
+        cards_str = ""
+        for i, (rank, suit) in enumerate(hand):
+            if hide_second and i == 1:
+                cards_str += "🂠 "
+            else:
+                cards_str += f"[`{rank}{suit}`] "
+        return cards_str
+
+    def create_embed(self, result=None):
+        player_score = self.calculate_score(self.player_hand)
+        
+        if result: # Game over, show dealer
+            dealer_score = self.calculate_score(self.dealer_hand)
+            dealer_hand_str = self.format_hand(self.dealer_hand)
+            dealer_title = f"Dealer: {dealer_score}"
+        else: # Game ongoing, hide dealer 2nd card
+            dealer_hand_str = self.format_hand(self.dealer_hand, hide_second=True)
+            dealer_title = "Dealer: ?"
+
+        color = discord.Color.blue()
+        if result:
+            if "Menang" in result or "Blackjack" in result: color = discord.Color.green()
+            elif "Kalah" in result or "Bust" in result: color = discord.Color.red()
+            elif "Seri" in result: color = discord.Color.gold()
+
+        embed = discord.Embed(title="🃏 Blackjack", description=result, color=color)
+        embed.add_field(name=f"Kartumu ({player_score})", value=self.format_hand(self.player_hand), inline=True)
+        embed.add_field(name=dealer_title, value=dealer_hand_str, inline=True)
+        embed.add_field(name="Taruhan", value=f"{self.bet} koin", inline=False)
+        embed.set_footer(text=f"Player: {self.author.display_name}")
+        return embed
+
+    async def end_game(self, interaction: discord.Interaction, result: str, payout_mult: float = 0):
+        for item in self.children: item.disabled = True
+        
+        if payout_mult > 0:
+            # payout_mult 1.0 = balik modal (seri), 2.0 = menang 1x, 2.5 = blackjack
+            payout = int(self.bet * payout_mult)
+            await bot.db.add_coins(self.author.id, payout)
+        
+        embed = self.create_embed(result)
+        await interaction.response.edit_message(embed=embed, view=self)
+        self.stop()
+
+    @discord.ui.button(label="Hit", style=discord.ButtonStyle.primary)
+    async def hit(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.player_hand.append(self.draw_card())
+        score = self.calculate_score(self.player_hand)
+        
+        if score > 21:
+            await self.end_game(interaction, "💥 BUST! Kamu melebihi 21. Kamu kalah.", 0)
+        elif score == 21:
+            await self.stand_logic(interaction)
+        else:
+            await interaction.response.edit_message(embed=self.create_embed(), view=self)
+
+    @discord.ui.button(label="Stand", style=discord.ButtonStyle.secondary)
+    async def stand(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.stand_logic(interaction)
+
+    async def stand_logic(self, interaction: discord.Interaction):
+        player_score = self.calculate_score(self.player_hand)
+        
+        while self.calculate_score(self.dealer_hand) < 17:
+            self.dealer_hand.append(self.draw_card())
+        
+        dealer_score = self.calculate_score(self.dealer_hand)
+        
+        if dealer_score > 21:
+            await self.end_game(interaction, "🎉 Dealer BUST! Kamu Menang!", 2.0)
+        elif dealer_score > player_score:
+            await self.end_game(interaction, "❌ Dealer memiliki nilai lebih tinggi. Kamu Kalah.", 0)
+        elif dealer_score < player_score:
+            await self.end_game(interaction, "🎉 Nilaimu lebih tinggi! Kamu Menang!", 2.0)
+        else:
+            await self.end_game(interaction, "⚖️ Seri (Push). Taruhan dikembalikan.", 1.0)
+
+@game_group.command(name="blackjack", description="Main Blackjack (21) melawan dealer.")
+@app_commands.describe(taruhan="Jumlah koin yang ingin dipertaruhkan.")
+async def blackjack(interaction: discord.Interaction, taruhan: app_commands.Range[int, 1]):
+    user_data = await bot.db.get_user_data(interaction.user.id)
+    if user_data['coins'] < taruhan:
+        await send_auto_delete(interaction, "❌ Koinmu tidak cukup!", delay=5)
+        return
+    
+    # Potong taruhan di awal
+    await bot.db.add_coins(interaction.user.id, -taruhan)
+    await bot.db.record_game_play(interaction.user.id, "Blackjack")
+    
+    view = BlackjackView(interaction.user, taruhan)
+    
+    # Cek Instant Blackjack Player
+    if view.calculate_score(view.player_hand) == 21:
+        if view.calculate_score(view.dealer_hand) == 21:
+             await bot.db.add_coins(interaction.user.id, taruhan) # Refund
+             embed = view.create_embed("⚖️ Keduanya Blackjack! Seri.")
+             await interaction.response.send_message(embed=embed, view=None)
+        else:
+             payout = int(taruhan * 2.5) # Menang 3:2
+             await bot.db.add_coins(interaction.user.id, payout)
+             embed = view.create_embed("🎉 BLACKJACK! Kamu menang 1.5x lipat!")
+             await interaction.response.send_message(embed=embed, view=None)
+        return
+
+    await interaction.response.send_message(embed=view.create_embed(), view=view)
+
+### GAME 7: BALAPAN (RACE)
+@game_group.command(name="balapan", description="Taruhan pada balapan hewan! Pilih jagoanmu.")
+@app_commands.describe(
+    taruhan="Jumlah koin yang dipertaruhkan.",
+    jagoan="Pilih hewan jagoanmu (1-4)."
+)
+@app_commands.choices(jagoan=[
+    app_commands.Choice(name="1. 🐎 Kuda", value=1),
+    app_commands.Choice(name="2. 🐕 Anjing", value=2),
+    app_commands.Choice(name="3. 🐈 Kucing", value=3),
+    app_commands.Choice(name="4. 🐇 Kelinci", value=4)
+])
+async def balapan(interaction: discord.Interaction, taruhan: app_commands.Range[int, 1], jagoan: app_commands.Choice[int]):
+    user_data = await bot.db.get_user_data(interaction.user.id)
+    if user_data['coins'] < taruhan:
+        await send_auto_delete(interaction, "❌ Koinmu tidak cukup!", delay=5)
+        return
+
+    # Potong taruhan
+    await bot.db.add_coins(interaction.user.id, -taruhan)
+    await bot.db.record_game_play(interaction.user.id, "Balapan")
+
+    runners = [
+        {"emoji": "🐎", "name": "Kuda", "pos": 0},
+        {"emoji": "🐕", "name": "Anjing", "pos": 0},
+        {"emoji": "🐈", "name": "Kucing", "pos": 0},
+        {"emoji": "🐇", "name": "Kelinci", "pos": 0}
+    ]
+    
+    track_length = 15
+    
+    embed = discord.Embed(title="🏁 Balapan Dimulai! 🏁", description="Para peserta bersiap di garis start...", color=discord.Color.gold())
+    await interaction.response.send_message(embed=embed)
+    msg = await interaction.original_response()
+    
+    winner_idx = -1
+    
+    while winner_idx == -1:
+        await asyncio.sleep(1.5)
+        
+        track_display = ""
+        finished_runners = []
+        
+        for i, runner in enumerate(runners):
+            # Gerakan acak 1-3 langkah
+            move = random.randint(1, 3)
+            # Sedikit variasi acak agar tidak monoton (10% chance boost)
+            if random.random() < 0.1: move += 1
+            
+            runner["pos"] += move
+            
+            # Visualisasi Track
+            # Clamp posisi untuk visual agar tidak melebihi panjang track
+            visual_pos = min(runner["pos"], track_length)
+            
+            spaces_before = visual_pos
+            spaces_after = track_length - visual_pos
+            
+            line = "🏁 " + "・" * spaces_before + runner["emoji"] + "・" * spaces_after + " 🏁"
+            
+            if runner["pos"] >= track_length:
+                finished_runners.append(i)
+                line += " 🚩"
+            
+            track_display += f"**{i+1}. {runner['name']}**\n{line}\n\n"
+        
+        embed.description = track_display
+        await msg.edit(embed=embed)
+        
+        if finished_runners:
+            # Jika ada yang finish, tentukan pemenang
+            # Jika seri (finish bareng), ambil yang posisinya paling jauh
+            winner_idx = max(finished_runners, key=lambda i: runners[i]["pos"])
+            break
+            
+    # Hasil Akhir
+    winner = runners[winner_idx]
+    user_choice_idx = jagoan.value - 1
+    
+    result_desc = f"🏆 **{winner['name']}** ({winner['emoji']}) memenangkan balapan!\n\n"
+    
+    if user_choice_idx == winner_idx:
+        winnings = taruhan * 3 # Menang 3x lipat (karena ada 4 peserta)
+        await bot.db.add_coins(interaction.user.id, winnings)
+        result_desc += f"🎉 **SELAMAT!** Pilihanmu tepat! Kamu memenangkan **{winnings}** koin!"
+        color = discord.Color.green()
+    else:
+        result_desc += f"❌ Sayang sekali, kamu memilih {runners[user_choice_idx]['name']}. Kamu kehilangan **{taruhan}** koin."
+        color = discord.Color.red()
+        
+    embed = discord.Embed(title="🏁 Hasil Balapan 🏁", description=result_desc, color=color)
+    await msg.edit(embed=embed)
+
+### GAME 8: COINFLIP
+@game_group.command(name="coinflip", description="Lempar koin (Head/Tail). Peluang 50:50.")
+@app_commands.describe(taruhan="Jumlah koin.", sisi="Pilih sisi koin.")
+@app_commands.choices(sisi=[
+    app_commands.Choice(name="🪙 Head (Gambar)", value="head"),
+    app_commands.Choice(name="🦅 Tail (Angka)", value="tail")
+])
+async def coinflip(interaction: discord.Interaction, taruhan: app_commands.Range[int, 1], sisi: app_commands.Choice[str]):
+    user_data = await bot.db.get_user_data(interaction.user.id)
+    if user_data['coins'] < taruhan:
+        await send_auto_delete(interaction, "❌ Koinmu tidak cukup!", delay=5)
+        return
+
+    await bot.db.add_coins(interaction.user.id, -taruhan)
+    await bot.db.record_game_play(interaction.user.id, "Coinflip")
+    
+    outcome = random.choice(["head", "tail"])
+    outcome_name = "Head (Gambar) 🪙" if outcome == "head" else "Tail (Angka) 🦅"
+    
+    # Animasi suspense sederhana
+    embed = discord.Embed(title="🪙 Melempar Koin...", description="Koin sedang berputar di udara...", color=discord.Color.gold())
+    await interaction.response.send_message(embed=embed)
+    await asyncio.sleep(2)
+    
+    if sisi.value == outcome:
+        winnings = int(taruhan * 1.95) # 1.95x payout
+        await bot.db.add_coins(interaction.user.id, winnings)
+        embed = discord.Embed(title="🪙 Coinflip", description=f"Koin mendarat di: **{outcome_name}**\n🎉 Kamu Menang **{winnings}** koin!", color=discord.Color.green())
+    else:
+        embed = discord.Embed(title="🪙 Coinflip", description=f"Koin mendarat di: **{outcome_name}**\n❌ Kamu Kalah **{taruhan}** koin.", color=discord.Color.red())
+        
+    await interaction.edit_original_response(embed=embed)
 
 bot.tree.add_command(game_group)
 
@@ -1541,17 +1866,35 @@ async def profile(interaction: discord.Interaction, user: discord.User = None):
             display_birthday = "Format salah"
 
     embed = discord.Embed(
-        title=f"📜 Profil {target_user.display_name}",
+        title=f" Profil Pengguna",
+        description=f"Data statistik untuk {target_user.mention}",
         color=target_user.accent_color or discord.Color.blurple()
     )
     embed.set_thumbnail(url=target_user.display_avatar.url)
     
-    embed.add_field(name="🏆 Level", value=f"**{level}**", inline=True)
-    embed.add_field(name="✨ Reputasi", value=f"**{reputation}**", inline=True)
-    embed.add_field(name="💰 Koin", value=f"**{coins}**", inline=True)
+    embed.add_field(name="🏆 Level", value=f"```{level}```", inline=True)
+    embed.add_field(name="✨ Reputasi", value=f"```{reputation}```", inline=True)
+    embed.add_field(name="💰 Saldo", value=f"```{coins:,}```", inline=True)
     
-    embed.add_field(name=f"XP: {xp} / {xp_needed}", value=f"`{bar}`", inline=False)
-    embed.add_field(name="🎂 Ulang Tahun", value=display_birthday, inline=False)
+    embed.add_field(name=f"📊 Progress XP ({xp}/{xp_needed})", value=f"`{bar}`", inline=False)
+    embed.add_field(name="🎂 Ulang Tahun", value=f"🗓️ {display_birthday}", inline=False)
+
+    # --- Statistik Game ---
+    game_stats = await bot.db.get_game_stats(target_user.id)
+    
+    if game_stats:
+        # Game Favorit (Top 3)
+        fav_text = ""
+        for stat in game_stats[:3]:
+            fav_text += f"{stat['game_name']:<14} — {stat['total_plays']}x main\n"
+        embed.add_field(name="🎮 Game Favorit", value=f"```{fav_text}```", inline=False)
+        
+        # Game Paling Aktif (Minggu Ini)
+        weekly_active = [s for s in game_stats if s['weekly_plays'] > 0]
+        if weekly_active:
+            best_weekly = max(weekly_active, key=lambda x: x['weekly_plays'])
+            embed.add_field(name="🔥 Game Paling Aktif", value=f"```{best_weekly['game_name']} ({best_weekly['weekly_plays']}x minggu ini)```", inline=False)
+
     embed.set_footer(text=f"ID Pengguna: {target_user.id}")
 
     await interaction.response.send_message(embed=embed)
@@ -1633,6 +1976,7 @@ async def leaderboard(interaction: discord.Interaction, kategori: app_commands.C
 
     embed = discord.Embed(
         title=f"{title_map.get(kategori.value, 'Papan Peringkat')} - {scope_title}",
+        description="Berikut adalah Top 10 pengguna teratas:",
         color=discord.Color.gold()
     )
 
@@ -1676,14 +2020,12 @@ async def pay(interaction: discord.Interaction, user: discord.User, amount: app_
         await send_auto_delete(interaction, f"❌ Koinmu tidak cukup! Kamu hanya punya {giver_data['coins']} koin.", delay=5)
         return
 
-    # --- Proses Transfer ---
-    receiver_data = await bot.db.get_user_data(receiver.id)
-    await bot.db.update_user_balance(giver.id, giver_data['coins'] - amount)
-    await bot.db.update_user_balance(receiver.id, receiver_data['coins'] + amount)
+    # --- Proses Transfer (BUG FIX: Gunakan add_coins) ---
+    await bot.db.add_coins(giver.id, -amount)
+    await bot.db.add_coins(receiver.id, amount)
 
     # --- Konfirmasi ---
     embed = discord.Embed(title="💸 Transfer Berhasil", description=f"Kamu berhasil mentransfer **{amount}** koin kepada {receiver.mention}.", color=discord.Color.green())
-    embed.set_footer(text=f"Sisa koinmu: {giver_data['coins'] - amount}")
     await interaction.response.send_message(embed=embed)
 
 if __name__ ==  "__main__":
