@@ -1,3 +1,5 @@
 discord.py
-asyncpg
 python-dotenv
+asyncpg
+aiohttp
+flask

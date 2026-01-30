@@ -6,9 +6,11 @@ from dotenv import load_dotenv
 import asyncio
 import random
 from datetime import datetime, timedelta, timezone, time
+import aiohttp
 
 # Impor kelas DatabaseManager yang kita buat
 from database import DatabaseManager
+from keep_alive import keep_alive
 
 # --- Konfigurasi & Variabel Global ---
 load_dotenv(override=True)
@@ -181,20 +183,24 @@ async def send_auto_delete(interaction: discord.Interaction, content: str = None
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.errors.CommandOnCooldown):
-        await interaction.response.send_message(f"⏳ Perintah ini sedang dalam cooldown. Coba lagi dalam {error.retry_after:.2f} detik.", ephemeral=True)
+        embed = discord.Embed(title="⏳ Cooldown", description=f"Perintah ini sedang dalam cooldown. Coba lagi dalam **{error.retry_after:.2f} detik**.", color=discord.Color.red())
+        await interaction.response.send_message(embed=embed, ephemeral=True)
     elif isinstance(error, app_commands.errors.MissingPermissions):
-        await interaction.response.send_message("❌ Anda tidak memiliki izin yang diperlukan untuk menjalankan perintah ini.", ephemeral=True)
+        embed = discord.Embed(title="❌ Akses Ditolak", description="Anda tidak memiliki izin yang diperlukan untuk menjalankan perintah ini.", color=discord.Color.red())
+        await interaction.response.send_message(embed=embed, ephemeral=True)
     elif isinstance(error, app_commands.errors.CheckFailure):
         # Ini akan menangkap kegagalan dari is_owner() dan cek lainnya
-        await interaction.response.send_message("❌ Anda tidak memenuhi syarat untuk menggunakan perintah ini.", ephemeral=True)
+        embed = discord.Embed(title="❌ Akses Ditolak", description="Anda tidak memenuhi syarat untuk menggunakan perintah ini.", color=discord.Color.red())
+        await interaction.response.send_message(embed=embed, ephemeral=True)
     else:
         # Untuk error lain, catat di konsol dan beri tahu pengguna.
         print(f"Error tak tertangani untuk command /{interaction.command.name}: {error}")
         # Pastikan untuk merespons interaksi agar tidak gagal
+        embed = discord.Embed(title="❌ Error", description="Terjadi kesalahan saat menjalankan perintah.", color=discord.Color.red())
         if not interaction.response.is_done():
-            await interaction.response.send_message("Terjadi error saat menjalankan perintah.", ephemeral=True)
+            await interaction.response.send_message(embed=embed, ephemeral=True)
         else:
-            await interaction.followup.send("Terjadi error saat menjalankan perintah.", ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
 # --- Command Tambahan untuk Developer ---
 # Ketik '!sync' di chat untuk memunculkan command baru secara instan
@@ -216,6 +222,14 @@ async def sync(ctx):
 
 @bot.command()
 @commands.is_owner()
+async def clearglobal(ctx):
+    # Menghapus command global via API langsung agar tidak menghapus command di memori bot
+    # Ini mencegah !sync menjadi 0 setelah menjalankan command ini
+    await bot.http.bulk_upsert_global_commands(bot.application_id, [])
+    await ctx.send("✅ Berhasil menghapus semua command Global. Sekarang hanya command Server (yang di-sync via `!sync`) yang akan muncul. Masalah double command seharusnya sudah teratasi.")
+
+@bot.command()
+@commands.is_owner()
 async def unsync(ctx):
     # Menghapus semua command khusus dari server ini
     bot.tree.clear_commands(guild=ctx.guild)
@@ -225,8 +239,10 @@ async def unsync(ctx):
 @bot.tree.command(name="ping", description="Mengecek latensi bot")
 async def ping(interaction: discord.Interaction):
     latency = round(bot.latency * 1000) 
-
-    await interaction.response.send_message(f"Pong! 🏓 Latency: {latency}ms")
+    color = discord.Color.green() if latency < 100 else discord.Color.orange() if latency < 200 else discord.Color.red()
+    embed = discord.Embed(title="🏓 Pong!", description=f"Latensi bot saat ini:", color=color)
+    embed.add_field(name="Latency", value=f"**{latency}ms**", inline=False)
+    await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="help", description="Tampilkan daftar semua perintah yang tersedia.")
 async def help_command(interaction: discord.Interaction):
@@ -243,7 +259,8 @@ async def help_command(interaction: discord.Interaction):
         "Game": "🎲 Game",
         "Judi": "🎰 Game Judi",
         "Birthday": "🎂 Ulang Tahun",
-        "Sosial": "👥 Sosial & Ekonomi"
+        "Sosial": "👥 Sosial & Ekonomi",
+        "Fun": "🎭 Hiburan & Interaksi"
     }
     
     commands_by_category = {v: [] for v in category_map.values()}
@@ -262,6 +279,9 @@ async def help_command(interaction: discord.Interaction):
             elif cmd.name == "birthday":
                 for sub_cmd in sorted(cmd.commands, key=lambda c: c.name):
                     commands_by_category[category_map["Birthday"]].append(f"`/{cmd.name} {sub_cmd.name}`: {sub_cmd.description}")
+            elif cmd.name == "fun":
+                for sub_cmd in sorted(cmd.commands, key=lambda c: c.name):
+                    commands_by_category[category_map["Fun"]].append(f"`/{cmd.name} {sub_cmd.name}`: {sub_cmd.description}")
         # Handle standalone commands
         else:
             if cmd.name in ["tebakkata", "mathbattle", "higherlower"]:
@@ -296,14 +316,39 @@ async def cekkantong(interaction: discord.Interaction):
     
     # Ambil data dari database
     user_data = await bot.db.get_user_data(user_id)
+    coins = user_data['coins']
+
+    # Tentukan status kekayaan dan warna embed
+    if coins < 100:
+        status = "Butuh Donasi 🥺"
+        color = discord.Color.light_grey()
+        desc = "Dompetmu kering kerontang..."
+    elif coins < 1000:
+        status = "Warga Biasa 😐"
+        color = discord.Color.blue()
+        desc = "Cukup buat jajan cilok."
+    elif coins < 5000:
+        status = "Menengah ke Atas 💼"
+        color = discord.Color.green()
+        desc = "Lumayan, bisa buat traktir teman."
+    elif coins < 20000:
+        status = "Sultan Lokal 👑"
+        color = discord.Color.gold()
+        desc = "Uang bukan masalah bagimu."
+    else:
+        status = "Crazy Rich 💎"
+        color = discord.Color.purple()
+        desc = "Hartamu tidak akan habis 7 turunan!"
     
     embed = discord.Embed(
-        title=f"🎒 Isi Kantong {interaction.user.display_name}",
-        description=f"Saldo saat ini:",
-        color=discord.Color.gold()
+        title=f"👛 Isi Dompet {interaction.user.display_name}",
+        description=f"*{desc}*",
+        color=color
     )
-    embed.add_field(name="Koin", value=f"**{user_data['coins']:,}** 💰", inline=False)
-    embed.set_footer(text="Gunakan koinmu dengan bijak!", icon_url=interaction.user.display_avatar.url)
+    embed.add_field(name="Saldo Koin", value=f"# 💰 {coins:,}", inline=False)
+    embed.add_field(name="Status Ekonomi", value=f"**{status}**", inline=False)
+    embed.set_thumbnail(url=interaction.user.display_avatar.url)
+    embed.set_footer(text="Gunakan /daily untuk klaim koin harian!", icon_url="https://cdn-icons-png.flaticon.com/512/2933/2933116.png")
     await interaction.response.send_message(embed=embed)
 
 # Command untuk klaim hadiah harian
@@ -326,7 +371,8 @@ async def daily(interaction: discord.Interaction):
             hours, remainder = divmod(int(time_left.total_seconds()), 3600)
             minutes, _ = divmod(remainder, 60)
             
-            await interaction.response.send_message(f"Anda harus menunggu **{hours} jam {minutes} menit** lagi untuk bisa klaim hadiah harian.", ephemeral=True)
+            embed = discord.Embed(title="⏳ Cooldown Daily", description=f"Anda harus menunggu **{hours} jam {minutes} menit** lagi untuk bisa klaim hadiah harian.", color=discord.Color.orange())
+            await interaction.response.send_message(embed=embed, ephemeral=True)
             return
 
     # Logika jika cooldown sudah selesai atau klaim pertama kali
@@ -336,10 +382,11 @@ async def daily(interaction: discord.Interaction):
     
     embed = discord.Embed(
         title="📅 Hadiah Harian",
-        description=f"Kamu telah mengklaim hadiah harianmu!",
+        description=f"Selamat {interaction.user.mention}, kamu telah mengklaim hadiah harianmu!",
         color=discord.Color.green()
     )
     embed.add_field(name="Diterima", value=f"**+{reward}** 💰", inline=True)
+    embed.set_thumbnail(url="https://cdn-icons-png.flaticon.com/512/2933/2933116.png")
     await interaction.response.send_message(embed=embed)
 
 # --- Fitur Ulang Tahun ---
@@ -358,10 +405,12 @@ async def set_birthday(interaction: discord.Interaction, tanggal: str):
         
         await bot.db.set_birthday(interaction.user.id, birthday_str_db)
         
-        await send_auto_delete(interaction, f"✅ Ulang tahunmu berhasil diatur ke tanggal **{tanggal}**!", delay=5)
+        embed = discord.Embed(title="✅ Berhasil", description=f"Ulang tahunmu berhasil diatur ke tanggal **{tanggal}**!", color=discord.Color.green())
+        await send_auto_delete(interaction, embed=embed, delay=5)
 
     except ValueError:
-        await send_auto_delete(interaction, "❌ Format tanggal salah! Harap gunakan format **DD-MM**, contoh: `25-12`.", delay=5)
+        embed = discord.Embed(title="❌ Format Salah", description="Harap gunakan format **DD-MM**, contoh: `25-12`.", color=discord.Color.red())
+        await send_auto_delete(interaction, embed=embed, delay=5)
 
 @birthday_group.command(name="info", description="Lihat tanggal ulang tahun yang tersimpan")
 async def info_birthday(interaction: discord.Interaction):
@@ -372,9 +421,11 @@ async def info_birthday(interaction: discord.Interaction):
         # Konversi dari MM-DD (DB) ke DD-MM (Display)
         birth_date = datetime.strptime(birthday_str_db, "%m-%d")
         display_date = birth_date.strftime("%d-%m")
-        await interaction.response.send_message(f"ℹ️ Tanggal ulang tahunmu tercatat pada: **{display_date}**.", ephemeral=True)
+        embed = discord.Embed(title="🎂 Info Ulang Tahun", description=f"Tanggal ulang tahunmu tercatat pada: **{display_date}**.", color=discord.Color.magenta())
+        await interaction.response.send_message(embed=embed, ephemeral=True)
     else:
-        await interaction.response.send_message("Kamu belum mengatur tanggal ulang tahunmu. Gunakan `/birthday set`.", ephemeral=True)
+        embed = discord.Embed(title="ℹ️ Info", description="Kamu belum mengatur tanggal ulang tahunmu. Gunakan `/birthday set`.", color=discord.Color.blue())
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # Daftarkan command group ke bot
 bot.tree.add_command(birthday_group)
@@ -388,7 +439,7 @@ async def tebak_kata(interaction: discord.Interaction):
     huruf_acak = ''.join(random.sample(kata_asli, len(kata_asli)))
 
     embed = discord.Embed(
-        title=" unscramble 🔡 Tebak Kata!",
+        title="🔡 Tebak Kata!",
         description=f"Aku punya kata: **`{huruf_acak.upper()}`**\n\nCoba tebak kata aslinya apa? Kamu punya waktu 30 detik!",
         color=discord.Color.blue()
     )
@@ -404,12 +455,15 @@ async def tebak_kata(interaction: discord.Interaction):
         if msg.content.lower() == kata_asli:
             # BUG FIX: Gunakan add_coins untuk transaksi atomik
             await bot.db.add_coins(interaction.user.id, TEBAK_KATA_REWARD)
-            await send_auto_delete(interaction, f"🎉 Benar sekali! Jawabannya adalah **{kata_asli}**. Kamu mendapatkan **{TEBAK_KATA_REWARD}** koin!", delay=10, ephemeral=False)
+            embed = discord.Embed(title="🎉 Benar Sekali!", description=f"Jawabannya adalah **{kata_asli}**.\nKamu mendapatkan **{TEBAK_KATA_REWARD}** koin!", color=discord.Color.green())
+            await send_auto_delete(interaction, embed=embed, delay=10, ephemeral=False)
         else:
-            await send_auto_delete(interaction, f"❌ Salah! Jawaban yang benar adalah **{kata_asli}**. Coba lagi lain kali!", delay=10, ephemeral=False)
+            embed = discord.Embed(title="❌ Salah!", description=f"Jawaban yang benar adalah **{kata_asli}**. Coba lagi lain kali!", color=discord.Color.red())
+            await send_auto_delete(interaction, embed=embed, delay=10, ephemeral=False)
 
     except asyncio.TimeoutError:
-        await send_auto_delete(interaction, f"⏰ Waktu habis! Jawaban yang benar adalah **{kata_asli}**.", delay=10, ephemeral=False)
+        embed = discord.Embed(title="⏰ Waktu Habis!", description=f"Jawaban yang benar adalah **{kata_asli}**.", color=discord.Color.red())
+        await send_auto_delete(interaction, embed=embed, delay=10, ephemeral=False)
 
 @bot.tree.command(name="mathbattle", description="Selesaikan soal matematika dalam 10 detik!")
 async def math_battle(interaction: discord.Interaction):
@@ -424,7 +478,8 @@ async def math_battle(interaction: discord.Interaction):
     else:
         jawaban = num1 - num2
 
-    await interaction.response.send_message(f"⚔️ **Math Battle!** Berapa hasil dari **`{num1} {op} {num2}`**? Waktumu 10 detik!")
+    embed = discord.Embed(title="⚔️ Math Battle!", description=f"Berapa hasil dari **`{num1} {op} {num2}`**?\nWaktumu 10 detik!", color=discord.Color.blue())
+    await interaction.response.send_message(embed=embed)
 
     def check(m):
         return m.author == interaction.user and m.channel == interaction.channel
@@ -435,14 +490,18 @@ async def math_battle(interaction: discord.Interaction):
         if int(msg.content) == jawaban:
             # BUG FIX: Gunakan add_coins untuk transaksi atomik
             await bot.db.add_coins(interaction.user.id, MATH_BATTLE_REWARD)
-            await send_auto_delete(interaction, f"🧠 Cerdas! Jawabannya **{jawaban}**. Kamu dapat **{MATH_BATTLE_REWARD}** koin!", delay=10, ephemeral=False)
+            embed = discord.Embed(title="🧠 Cerdas!", description=f"Jawabannya **{jawaban}**.\nKamu dapat **{MATH_BATTLE_REWARD}** koin!", color=discord.Color.green())
+            await send_auto_delete(interaction, embed=embed, delay=10, ephemeral=False)
         else:
-            await send_auto_delete(interaction, f"❌ Salah! Jawaban yang benar adalah **{jawaban}**.", delay=10, ephemeral=False)
+            embed = discord.Embed(title="❌ Salah!", description=f"Jawaban yang benar adalah **{jawaban}**.", color=discord.Color.red())
+            await send_auto_delete(interaction, embed=embed, delay=10, ephemeral=False)
     
     except asyncio.TimeoutError:
-        await send_auto_delete(interaction, f"⏰ Waktu habis! Jawabannya adalah **{jawaban}**.", delay=10, ephemeral=False)
+        embed = discord.Embed(title="⏰ Waktu Habis!", description=f"Jawabannya adalah **{jawaban}**.", color=discord.Color.red())
+        await send_auto_delete(interaction, embed=embed, delay=10, ephemeral=False)
     except (ValueError, TypeError):
-        await send_auto_delete(interaction, f"❌ Itu bukan angka! Jawaban yang benar adalah **{jawaban}**.", delay=5, ephemeral=False)
+        embed = discord.Embed(title="❌ Error", description=f"Itu bukan angka! Jawaban yang benar adalah **{jawaban}**.", color=discord.Color.red())
+        await send_auto_delete(interaction, embed=embed, delay=5, ephemeral=False)
 
 @bot.tree.command(name="higherlower", description="Tebak angka rahasia antara 1-100.")
 async def higher_lower(interaction: discord.Interaction):
@@ -450,7 +509,8 @@ async def higher_lower(interaction: discord.Interaction):
     angka_rahasia = random.randint(1, 100)
     kesempatan = 5
 
-    await interaction.response.send_message(f"🤔 Aku telah memilih angka antara 1 dan 100. Kamu punya **{kesempatan}** kesempatan untuk menebaknya!")
+    embed = discord.Embed(title="🤔 Higher or Lower", description=f"Aku telah memilih angka antara 1 dan 100.\nKamu punya **{kesempatan}** kesempatan untuk menebaknya!", color=discord.Color.blue())
+    await interaction.response.send_message(embed=embed)
 
     def check(m):
         return m.author == interaction.user and m.channel == interaction.channel
@@ -463,24 +523,29 @@ async def higher_lower(interaction: discord.Interaction):
             if tebakan == angka_rahasia:
                 # BUG FIX: Gunakan add_coins untuk transaksi atomik
                 await bot.db.add_coins(interaction.user.id, HIGHER_LOWER_REWARD)
-                await send_auto_delete(interaction, f"🏆 **HEBAT!** Kamu berhasil menebak angkanya, yaitu **{angka_rahasia}**! Kamu memenangkan **{HIGHER_LOWER_REWARD}** koin!", delay=15, ephemeral=False)
+                embed = discord.Embed(title="🏆 HEBAT!", description=f"Kamu berhasil menebak angkanya, yaitu **{angka_rahasia}**!\nKamu memenangkan **{HIGHER_LOWER_REWARD}** koin!", color=discord.Color.green())
+                await send_auto_delete(interaction, embed=embed, delay=15, ephemeral=False)
                 return # Keluar dari fungsi jika sudah menang
             
             elif tebakan < angka_rahasia:
                 sisa_kesempatan = kesempatan - (i + 1)
-                await send_auto_delete(interaction, f"🔼 **Lebih Tinggi!** (Sisa kesempatan: {sisa_kesempatan})", delay=5, ephemeral=False)
+                embed = discord.Embed(description=f"🔼 **Lebih Tinggi!** (Sisa kesempatan: {sisa_kesempatan})", color=discord.Color.orange())
+                await send_auto_delete(interaction, embed=embed, delay=5, ephemeral=False)
             else:
                 sisa_kesempatan = kesempatan - (i + 1)
-                await send_auto_delete(interaction, f"🔽 **Lebih Rendah!** (Sisa kesempatan: {sisa_kesempatan})", delay=5, ephemeral=False)
+                embed = discord.Embed(description=f"🔽 **Lebih Rendah!** (Sisa kesempatan: {sisa_kesempatan})", color=discord.Color.orange())
+                await send_auto_delete(interaction, embed=embed, delay=5, ephemeral=False)
 
         except asyncio.TimeoutError:
-            await send_auto_delete(interaction, f"⏰ Waktu menebak habis! Angka rahasianya adalah **{angka_rahasia}**.", delay=10, ephemeral=False)
+            embed = discord.Embed(title="⏰ Waktu Habis!", description=f"Angka rahasianya adalah **{angka_rahasia}**.", color=discord.Color.red())
+            await send_auto_delete(interaction, embed=embed, delay=10, ephemeral=False)
             return
         except (ValueError, TypeError):
             await send_auto_delete(interaction, "Itu bukan angka yang valid. Coba lagi.", delay=3, ephemeral=False)
 
     # Jika loop selesai tanpa menang
-    await send_auto_delete(interaction, f"GAME OVER! Kamu kehabisan kesempatan. Angka rahasianya adalah **{angka_rahasia}**.", delay=10, ephemeral=False)
+    embed = discord.Embed(title="💀 GAME OVER", description=f"Kamu kehabisan kesempatan. Angka rahasianya adalah **{angka_rahasia}**.", color=discord.Color.red())
+    await send_auto_delete(interaction, embed=embed, delay=10, ephemeral=False)
 
 # --- Game Batu Kertas Gunting (PvP) ---
 
@@ -509,7 +574,8 @@ class RPSBattleView(discord.ui.View):
             await self.end_game(self.player2, self.player1, f"Waktu habis! {self.player1.mention} tidak memilih.")
         else:
             # Both or neither chose, it's a draw, no coin transfer needed
-            await self.message.edit(content="Waktu habis! Permainan dibatalkan karena tidak ada pilihan.", view=self)
+            embed = discord.Embed(title="⏰ Waktu Habis", description="Permainan dibatalkan karena tidak ada pilihan.", color=discord.Color.red())
+            await self.message.edit(content=None, embed=embed, view=self)
 
     async def handle_choice(self, interaction: discord.Interaction, choice: str):
         player = interaction.user
@@ -551,8 +617,11 @@ class RPSBattleView(discord.ui.View):
         await bot.db.add_coins(winner.id, self.bet)
         await bot.db.add_coins(loser.id, -self.bet)
 
-        final_message = f"🎉 {winner.mention} **Menang**!\n{reason}\n\n{winner.mention} memenangkan **{self.bet}** koin dari {loser.mention}!"
-        await self.message.edit(content=final_message, view=self)
+        embed = discord.Embed(title="⚔️ Hasil Pertandingan", color=discord.Color.gold())
+        embed.add_field(name="Pemenang", value=f"{winner.mention} 🏆", inline=True)
+        embed.add_field(name="Hadiah", value=f"**{self.bet}** koin", inline=True)
+        embed.description = f"{reason}\n\n{winner.mention} mengambil taruhan dari {loser.mention}!"
+        await self.message.edit(content=None, embed=embed, view=self)
 
     @discord.ui.button(label="Batu 🗿", style=discord.ButtonStyle.secondary)
     async def rock(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -584,7 +653,8 @@ class RPSChallengeView(discord.ui.View):
     async def on_timeout(self):
         for item in self.children:
             item.disabled = True
-        await self.message.edit(content="Tantangan tidak direspons dan telah dibatalkan.", view=self)
+        embed = discord.Embed(title="⏰ Waktu Habis", description="Tantangan tidak direspons dan telah dibatalkan.", color=discord.Color.red())
+        await self.message.edit(content=None, embed=embed, view=self)
 
     @discord.ui.button(label="Terima Tantangan", style=discord.ButtonStyle.success)
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -592,11 +662,13 @@ class RPSChallengeView(discord.ui.View):
         opponent_data = await bot.db.get_user_data(self.opponent.id)
 
         if initiator_data['coins'] < self.bet:
-            await interaction.response.edit_message(content=f"Gagal memulai: {self.initiator.mention} tidak punya cukup koin lagi.", view=None)
+            embed = discord.Embed(title="❌ Gagal", description=f"Gagal memulai: {self.initiator.mention} tidak punya cukup koin lagi.", color=discord.Color.red())
+            await interaction.response.edit_message(content=None, embed=embed, view=None)
             self.stop()
             return
         if opponent_data['coins'] < self.bet:
-            await interaction.response.edit_message(content=f"Gagal memulai: Kamu tidak punya cukup koin untuk taruhan ini.", view=None)
+            embed = discord.Embed(title="❌ Gagal", description=f"Gagal memulai: Kamu tidak punya cukup koin untuk taruhan ini.", color=discord.Color.red())
+            await interaction.response.edit_message(content=None, embed=embed, view=None)
             self.stop()
             return
 
@@ -605,13 +677,15 @@ class RPSChallengeView(discord.ui.View):
         await bot.db.record_game_play(self.opponent.id, "Batu Gunting Kertas")
 
         game_view = RPSBattleView(self.initiator, self.opponent, self.bet)
-        await interaction.response.edit_message(content=f"Tantangan diterima! {self.initiator.mention} dan {self.opponent.mention}, silakan pilih gerakan kalian. Waktu 30 detik!", view=game_view)
+        embed = discord.Embed(title="⚔️ Pertarungan Dimulai!", description=f"{self.initiator.mention} vs {self.opponent.mention}\nSilakan pilih gerakan kalian. Waktu 30 detik!", color=discord.Color.gold())
+        await interaction.response.edit_message(content=None, embed=embed, view=game_view)
         game_view.message = await interaction.original_response()
         self.stop()
 
     @discord.ui.button(label="Tolak", style=discord.ButtonStyle.danger)
     async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.edit_message(content=f"{self.opponent.mention} menolak tantangan.", view=None)
+        embed = discord.Embed(title="❌ Ditolak", description=f"{self.opponent.mention} menolak tantangan.", color=discord.Color.red())
+        await interaction.response.edit_message(content=None, embed=embed, view=None)
         self.stop()
 
 
@@ -624,20 +698,24 @@ async def rps(interaction: discord.Interaction, lawan: discord.User, taruhan: ap
     initiator = interaction.user
 
     if initiator.id == lawan.id:
-        await send_auto_delete(interaction, "❌ Kamu tidak bisa menantang dirimu sendiri!", delay=5)
+        embed = discord.Embed(description="❌ Kamu tidak bisa menantang dirimu sendiri!", color=discord.Color.red())
+        await send_auto_delete(interaction, embed=embed, delay=5)
         return
     if lawan.bot:
-        await send_auto_delete(interaction, "❌ Kamu tidak bisa menantang bot!", delay=5)
+        embed = discord.Embed(description="❌ Kamu tidak bisa menantang bot!", color=discord.Color.red())
+        await send_auto_delete(interaction, embed=embed, delay=5)
         return
 
     initiator_data = await bot.db.get_user_data(initiator.id)
     if initiator_data['coins'] < taruhan:
-        await send_auto_delete(interaction, f"❌ Koinmu tidak cukup untuk bertaruh sebesar {taruhan} koin.", delay=5)
+        embed = discord.Embed(description=f"❌ Koinmu tidak cukup untuk bertaruh sebesar {taruhan} koin.", color=discord.Color.red())
+        await send_auto_delete(interaction, embed=embed, delay=5)
         return
 
     opponent_data = await bot.db.get_user_data(lawan.id)
     if opponent_data['coins'] < taruhan:
-        await send_auto_delete(interaction, f"❌ {lawan.display_name} tidak memiliki cukup koin untuk taruhan ini.", delay=5)
+        embed = discord.Embed(description=f"❌ {lawan.display_name} tidak memiliki cukup koin untuk taruhan ini.", color=discord.Color.red())
+        await send_auto_delete(interaction, embed=embed, delay=5)
         return
 
     view = RPSChallengeView(initiator, lawan, taruhan)
@@ -648,6 +726,111 @@ async def rps(interaction: discord.Interaction, lawan: discord.User, taruhan: ap
     )
     await interaction.response.send_message(content=f"Hei {lawan.mention}!", embed=embed, view=view)
     view.message = await interaction.original_response()
+
+# --- Game Tic Tac Toe (XOXO) ---
+
+class TicTacToeButton(discord.ui.Button):
+    def __init__(self, x: int, y: int):
+        super().__init__(style=discord.ButtonStyle.secondary, label="\u200b", row=y)
+        self.x = x
+        self.y = y
+
+    async def callback(self, interaction: discord.Interaction):
+        view: TicTacToeView = self.view
+        state = view.board[self.y][self.x]
+        if state in (view.X, view.O):
+            return
+
+        if view.current_player == view.X:
+            self.style = discord.ButtonStyle.danger
+            self.label = 'X'
+            self.disabled = True
+            view.board[self.y][self.x] = view.X
+            view.current_player = view.O
+        else:
+            self.style = discord.ButtonStyle.success
+            self.label = 'O'
+            self.disabled = True
+            view.board[self.y][self.x] = view.O
+            view.current_player = view.X
+
+        winner = view.check_winner()
+        description = ""
+        color = discord.Color.blue()
+
+        if winner is not None:
+            if winner == view.X:
+                description = f"🏆 {view.player1.mention} (X) Menang!"
+                color = discord.Color.green()
+            elif winner == view.O:
+                description = f"🏆 {view.player2.mention} (O) Menang!"
+                color = discord.Color.green()
+            else:
+                description = "🤝 **Seri!** Tidak ada pemenang."
+                color = discord.Color.gold()
+
+            for child in view.children:
+                child.disabled = True
+
+            view.stop()
+        else:
+            if view.current_player == view.X:
+                description = f"Giliran {view.player1.mention} (X)"
+            else:
+                description = f"Giliran {view.player2.mention} (O)"
+
+        embed = discord.Embed(title="🎮 Tic Tac Toe", description=description, color=color)
+        await interaction.response.edit_message(content=None, embed=embed, view=view)
+
+class TicTacToeView(discord.ui.View):
+    X = -1
+    O = 1
+    def __init__(self, player1, player2):
+        super().__init__()
+        self.player1 = player1
+        self.player2 = player2
+        self.current_player = self.X
+        self.board = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
+
+        for x in range(3):
+            for y in range(3):
+                self.add_item(TicTacToeButton(x, y))
+
+    def check_winner(self):
+        for across in self.board:
+            value = sum(across)
+            if value == 3: return self.O
+            if value == -3: return self.X
+
+        for line in range(3):
+            value = self.board[0][line] + self.board[1][line] + self.board[2][line]
+            if value == 3: return self.O
+            if value == -3: return self.X
+
+        diag = self.board[0][0] + self.board[1][1] + self.board[2][2]
+        if diag == 3: return self.O
+        if diag == -3: return self.X
+
+        diag = self.board[0][2] + self.board[1][1] + self.board[2][0]
+        if diag == 3: return self.O
+        if diag == -3: return self.X
+
+        if all(i != 0 for row in self.board for i in row):
+            return 0 # Tie
+
+        return None
+    
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user != self.player1 and interaction.user != self.player2:
+            await interaction.response.send_message("Ini bukan permainanmu!", ephemeral=True)
+            return False
+        if interaction.user == self.player1 and self.current_player == self.O:
+            await interaction.response.send_message("Bukan giliranmu!", ephemeral=True)
+            return False
+        if interaction.user == self.player2 and self.current_player == self.X:
+            await interaction.response.send_message("Bukan giliranmu!", ephemeral=True)
+            return False
+        return True
 
 # --- Mini Game Judi-Style ---
 
@@ -922,11 +1105,13 @@ class ShadowDealView(discord.ui.View):
         reward = int(self.bet * final_outcome)
 
         if final_outcome == 0:
-            await interaction.edit_original_response(content=f"🔮 Sosok itu membuka kartumu... **ZONK**! Kamu kehilangan **{self.bet}** koin.")
+            embed = discord.Embed(title="🎭 Shadow Deal", description=f"🔮 Sosok itu membuka kartumu...\n# **ZONK** 💀\nKamu kehilangan **{self.bet}** koin.", color=discord.Color.dark_grey())
+            await interaction.edit_original_response(content=None, embed=embed)
         else:
             # BUG FIX: Gunakan add_coins
             await bot.db.add_coins(self.author.id, reward)
-            await interaction.edit_original_response(content=f"🔮 Sosok itu membuka kartumu... **JACKPOT**! Kamu memenangkan **{reward}** koin!")
+            embed = discord.Embed(title="🎭 Shadow Deal", description=f"🔮 Sosok itu membuka kartumu...\n# **JACKPOT** 💎\nKamu memenangkan **{reward}** koin!", color=discord.Color.purple())
+            await interaction.edit_original_response(content=None, embed=embed)
         self.stop()
 
     @discord.ui.button(label="Kartu Pertama", style=discord.ButtonStyle.secondary, emoji="🃏")
@@ -1798,6 +1983,17 @@ async def coinflip(interaction: discord.Interaction, taruhan: app_commands.Range
         
     await interaction.edit_original_response(embed=embed)
 
+@game_group.command(name="tictactoe", description="Main Tic-Tac-Toe (XOXO) melawan teman.")
+@app_commands.describe(lawan="Pemain yang ingin kamu tantang.")
+async def tictactoe(interaction: discord.Interaction, lawan: discord.User):
+    if lawan.bot or lawan.id == interaction.user.id:
+        await interaction.response.send_message("Kamu tidak bisa bermain melawan bot atau dirimu sendiri.", ephemeral=True)
+        return
+
+    view = TicTacToeView(interaction.user, lawan)
+    embed = discord.Embed(title="🎮 Tic Tac Toe", description=f"{interaction.user.mention} (X) vs {lawan.mention} (O)\n\nGiliran {interaction.user.mention} (X)", color=discord.Color.blue())
+    await interaction.response.send_message(embed=embed, view=view)
+
 bot.tree.add_command(game_group)
 
 # --- Perintah Admin ---
@@ -1825,9 +2021,234 @@ async def give_coins(interaction: discord.Interaction, user: discord.User, amoun
     
     await bot.db.update_user_balance(user.id, new_balance)
     
-    await send_auto_delete(interaction, f"✅ Berhasil mengubah saldo {user.mention} sebesar `{amount}` koin. Saldo barunya sekarang adalah **{new_balance}** koin.", delay=5)
+    embed = discord.Embed(description=f"✅ Berhasil mengubah saldo {user.mention} sebesar `{amount}` koin.\nSaldo barunya sekarang adalah **{new_balance}** koin.", color=discord.Color.green())
+    await send_auto_delete(interaction, embed=embed, delay=5)
 
 bot.tree.add_command(admin_group)
+
+# --- Fitur Fun & Interaksi ---
+fun_group = app_commands.Group(name="fun", description="Perintah seru-seruan dan interaksi sosial")
+
+@fun_group.command(name="kerangajaib", description="Tanyakan apa saja pada Kerang Ajaib.")
+async def kerang_ajaib(interaction: discord.Interaction, pertanyaan: str):
+    jawaban = ["Ya.", "Tidak.", "Mungkin.", "Coba tanya lagi nanti.", "Tidak mungkin.", "Pasti.", "Saya rasa tidak.", "Tentu saja!", "Mimpi kamu terlalu tinggi.", "Bisa jadi."]
+    embed = discord.Embed(title="🐚 Kerang Ajaib Bersabda", color=discord.Color.magenta())
+    embed.add_field(name="Pertanyaan", value=pertanyaan, inline=False)
+    embed.add_field(name="Jawaban", value=random.choice(jawaban), inline=False)
+    await interaction.response.send_message(embed=embed)
+
+@fun_group.command(name="rate", description="Beri nilai persentase untuk sesuatu atau seseorang.")
+async def rate(interaction: discord.Interaction, target: str):
+    rating = random.randint(0, 100)
+    emoji = "🤮" if rating < 20 else "😐" if rating < 50 else "👍" if rating < 80 else "🔥"
+    embed = discord.Embed(title="🤔 Rate Machine", description=f"Rating untuk **{target}**: **{rating}%** {emoji}", color=discord.Color.random())
+    await interaction.response.send_message(embed=embed)
+
+@fun_group.command(name="meme", description="Lihat meme acak dari internet.")
+async def meme(interaction: discord.Interaction):
+    await interaction.response.defer()
+    # Menggunakan API publik meme-api.com
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get('https://meme-api.com/gimme') as response:
+                if response.status == 200:
+                    data = await response.json()
+                    embed = discord.Embed(title=data['title'], url=data['postLink'], color=discord.Color.random())
+                    embed.set_image(url=data['url'])
+                    embed.set_footer(text=f"👍 {data['ups']} | Subreddit: r/{data['subreddit']}")
+                    await interaction.followup.send(embed=embed)
+                else:
+                    await interaction.followup.send("Gagal mengambil meme :( Coba lagi nanti.")
+    except Exception as e:
+        await interaction.followup.send(f"Terjadi kesalahan saat mengambil meme: {e}")
+
+@fun_group.command(name="avatar", description="Lihat avatar pengguna secara full HD.")
+async def avatar(interaction: discord.Interaction, user: discord.User = None):
+    target = user or interaction.user
+    embed = discord.Embed(title=f"Avatar {target.display_name}", color=target.color)
+    embed.set_image(url=target.display_avatar.url)
+    await interaction.response.send_message(embed=embed)
+
+@fun_group.command(name="gombal", description="Dapatkan gombalan maut acak.")
+async def gombal(interaction: discord.Interaction, user: discord.User = None):
+    gombalan_list = [
+        "Kamu itu kayak lempeng bumi, geser dikit aja gempa di hatiku.",
+        "Bapak kamu maling ya? Soalnya kamu pintar mencuri hatiku.",
+        "Cuka apa yang manis? Cuka sama kamu.",
+        "Kamu tau gak bedanya kamu sama jam 12? Jam 12 kesiangan, kalau kamu kesayangan.",
+        "Jepang bikin robot, Jerman bikin mobil, kamu bikin kangen.",
+        "Kalau kamu jadi senar gitar, aku nggak mau jadi gitarisnya. Aku nggak mau mutusin kamu.",
+        "Tahu gak kenapa menara pisa miring? Soalnya ketarik sama senyummu.",
+        "Napas aku kok sesek banget ya? Oh, ternyata separuh nafasku ada di kamu.",
+        "Kamu tau gak kenapa aku suka minum kopi? Soalnya kopi itu pahit, yang manis itu cuma kamu.",
+        "Kalau disuruh milih antara napas atau mencintaimu, aku bakal gunain napas terakhirku buat bilang aku cinta kamu.",
+        "Kamu punya peta gak? Aku tersesat di matamu.",
+        "Aku rela jadi abang nasi goreng, asalkan setiap malam aku bisa lewat di depan rumahmu.",
+        "Cintaku padamu itu kayak utang, awalnya kecil, lama-lama gede sendiri.",
+        "Kamu tau gak bedanya kamu sama monas? Monas milik pemerintah, kalau kamu milik aku.",
+        "Sejak kenal kamu, aku jadi susah tidur. Soalnya kenyataan lebih indah daripada mimpi.",
+        "Kalau kamu jadi bunga, aku rela jadi kumbangnya. Biar bisa selalu dekat sama kamu.",
+        "Kamu itu kayak wifi, sinyalnya kuat banget nyambung ke hatiku.",
+        "Aku gak sedih besok hari senin, aku sedihnya kalau besok gak ketemu kamu.",
+        "Tau gak kenapa pelangi cuma setengah lingkaran? Soalnya setengahnya lagi ada di matamu.",
+        "Kamu tau gak persamaan kamu sama soal ujian? Sama-sama perlu diperjuangkan."
+    ]
+    gombalan = random.choice(gombalan_list)
+    target = f" untuk {user.mention}" if user else ""
+    embed = discord.Embed(title="😏 Gombalan Maut", description=f"{gombalan}", color=discord.Color.pink())
+    if user:
+        embed.set_footer(text=f"Spesial untuk {user.display_name}")
+    await interaction.response.send_message(content=user.mention if user else None, embed=embed)
+
+@fun_group.command(name="ship", description="Cek kecocokan cinta antara dua orang.")
+async def ship(interaction: discord.Interaction, user1: discord.User, user2: discord.User = None):
+    if user2 is None:
+        user2 = interaction.user
+        
+    # Gunakan seed dari ID user agar hasilnya konsisten setiap hari (opsional, hapus seed jika ingin full random)
+    # random.seed(user1.id + user2.id + datetime.now().day) 
+    score = random.randint(0, 100)
+    # random.seed() # Reset seed
+    
+    if user1.id == user2.id:
+        score = 101 # Self love
+        
+    bar = '█' * (score // 10) + '░' * (10 - (score // 10))
+    
+    desc = f"💗 **{user1.display_name}** x **{user2.display_name}** 💗\n\n"
+    desc += f"**{score}%** `{bar}`\n\n"
+    
+    if score > 90:
+        desc += "🔥 Pasangan Sempurna! Segera nikah!"
+    elif score > 70:
+        desc += "🥰 Cocok banget!"
+    elif score > 40:
+        desc += "🤔 Boleh lah dicoba."
+    else:
+        desc += "💔 Cari yang lain aja..."
+        
+    embed = discord.Embed(title="💘 Love Calculator", description=desc, color=discord.Color.pink())
+    await interaction.response.send_message(embed=embed)
+
+@fun_group.command(name="pilih", description="Biarkan bot memilihkan sesuatu untukmu.")
+@app_commands.describe(pilihan="Pilihan dipisahkan dengan koma (contoh: Nasi Goreng, Mie Ayam, Bakso)")
+async def pilih(interaction: discord.Interaction, pilihan: str):
+    options = [x.strip() for x in pilihan.split(',')]
+    if len(options) < 2:
+        await interaction.response.send_message("Berikan minimal 2 pilihan dipisahkan koma. Contoh: `Nasi Goreng, Mie Ayam`", ephemeral=True)
+        return
+        
+    chosen = random.choice(options)
+    embed = discord.Embed(title="🤔 Saya Memilih...", description=f"**{chosen}**!", color=discord.Color.random())
+    await interaction.response.send_message(embed=embed)
+
+@fun_group.command(name="interaksi", description="Lakukan interaksi dengan pengguna lain (peluk, tampar, dll).")
+@app_commands.choices(aksi=[
+    app_commands.Choice(name="Peluk (Hug) 🤗", value="hug"),
+    app_commands.Choice(name="Tampar (Slap) 👋", value="slap"),
+    app_commands.Choice(name="Elus (Pat) 💆", value="pat"),
+    app_commands.Choice(name="Tonjok (Punch) 👊", value="punch"),
+    app_commands.Choice(name="Cium (Kiss) 💋", value="kiss"),
+    app_commands.Choice(name="Tos (Highfive) 🙌", value="highfive"),
+    app_commands.Choice(name="Bunuh (Kill) 🔪", value="kill"),
+    app_commands.Choice(name="Colek (Poke) 👉", value="poke")
+])
+async def interaksi(interaction: discord.Interaction, aksi: app_commands.Choice[str], user: discord.User):
+    if user == interaction.user:
+        embed = discord.Embed(
+            title="⚠️ Ups!", 
+            description="Kamu tidak bisa melakukan itu ke dirimu sendiri!\n*(Kecuali kamu sangat kesepian...)*", 
+            color=discord.Color.orange()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    gifs = {
+        "hug": [
+            "https://media.giphy.com/media/3bqtLDeiDtwhq/giphy.gif",
+            "https://media.giphy.com/media/l2QDM9Jnim1YVILXa/giphy.gif",
+            "https://media.giphy.com/media/od5H3PmEG5EVq/giphy.gif",
+            "https://media.giphy.com/media/u9BxQbM5bxvwY/giphy.gif",
+            "https://media.giphy.com/media/PHZ7v9tfQu0o0/giphy.gif",
+            "https://media.giphy.com/media/49mdjsMrH7oze/giphy.gif",
+            "https://media.giphy.com/media/lrr9rHuoJOE0w/giphy.gif"
+        ],
+        "slap": [
+            "https://media.giphy.com/media/X3Yj4XXXieKYM/giphy.gif",
+            "https://media.giphy.com/media/mEtSQlxqBtWWA/giphy.gif",
+            "https://media.giphy.com/media/Gf3AUz3eBNbTW/giphy.gif",
+            "https://media.giphy.com/media/10Am8idu3qMO9q/giphy.gif",
+            "https://media.giphy.com/media/Zau0yrl17uzdK/giphy.gif",
+            "https://media.giphy.com/media/jLeyZWgtwgr2U/giphy.gif",
+            "https://media.giphy.com/media/6Fad0loHc6Cbe/giphy.gif"
+        ],
+        "pat": [
+            "https://media.giphy.com/media/5tmRHwTlHAA9WkVxTU/giphy.gif",
+            "https://media.giphy.com/media/L2z7dnOduqE6Y/giphy.gif",
+            "https://media.giphy.com/media/4HP0ddZnNVvKU/giphy.gif",
+            "https://media.giphy.com/media/109ltuoSQ9owmY/giphy.gif",
+            "https://media.giphy.com/media/ye7OTQgwmVuVy/giphy.gif",
+            "https://media.giphy.com/media/ARSp9T7wwxNcs/giphy.gif",
+            "https://media.giphy.com/media/osYdfUptPqV0s/giphy.gif"
+        ],
+        "punch": [
+            "https://media1.tenor.com/m/BoYBoopIkBcAAAAC/anime-punch.gif",
+            "https://media1.tenor.com/m/p_mI1TqG38EAAAAC/anime-punch.gif",
+            "https://media1.tenor.com/m/tL3_uBflIuAAAAAC/saitama-punch.gif",
+            "https://media1.tenor.com/m/6a42QlkVsXEAAAAC/anime-punch.gif",
+            "https://media1.tenor.com/m/EvZ809qZCdEAAAAC/anime-punch.gif",
+            "https://media1.tenor.com/m/Swy_yI2gK9AAAAAC/anime-punch.gif",
+            "https://media1.tenor.com/m/uh8j85_6O_kAAAAC/anime-punch.gif"
+        ],
+        "kiss": [
+            "https://media1.tenor.com/m/7T1cOybcvSgAAAAC/anime-kiss.gif",
+            "https://media1.tenor.com/m/F02Ep3b2jJgAAAAC/cute-anime-kiss.gif",
+            "https://media1.tenor.com/m/v4Ur0OCvaXcAAAAC/anime-kiss.gif",
+            "https://media1.tenor.com/m/9351312684156726296/kiss-anime.gif"
+        ],
+        "highfive": [
+            "https://media1.tenor.com/m/JBBZ9mQkYV0AAAAC/high-five-anime.gif",
+            "https://media1.tenor.com/m/7h8yI-2XhzoAAAAC/high-five.gif",
+            "https://media1.tenor.com/m/291666992226425574/anime-high-five.gif"
+        ],
+        "kill": [
+            "https://media1.tenor.com/m/G4sG61m_9kAAAAAC/anime-kill.gif",
+            "https://media1.tenor.com/m/1w8J3_4X_xUAAAAC/akame-ga-kill.gif",
+            "https://media1.tenor.com/m/9351312684156726296/kill-anime.gif" 
+        ],
+        "poke": [
+            "https://media1.tenor.com/m/y4R6FhrWlswAAAAC/anime-poke.gif",
+            "https://media1.tenor.com/m/3xI1b3_p-9kAAAAC/poke-anime.gif",
+            "https://media1.tenor.com/m/9351312684156726296/poke-anime.gif"
+        ]
+    }
+    
+    # Konfigurasi tampilan untuk setiap aksi (Judul, Warna, Teks)
+    action_config = {
+        "hug": {"title": "🤗 Pelukan Hangat!", "color": discord.Color.from_rgb(255, 182, 193), "text": f"memeluk {user.mention} dengan erat!"},
+        "slap": {"title": "👋 Tamparan Keras!", "color": discord.Color.red(), "text": f"menampar {user.mention}! Aduh sakit..."},
+        "pat": {"title": "💆 Elus-elus", "color": discord.Color.gold(), "text": f"mengelus kepala {user.mention}. Good boy/girl!"},
+        "punch": {"title": "👊 Tonjokan Maut!", "color": discord.Color.dark_red(), "text": f"menonjok {user.mention}!"},
+        "kiss": {"title": "💋 Muah!", "color": discord.Color.magenta(), "text": f"mencium {user.mention}!"},
+        "highfive": {"title": "🙌 High Five!", "color": discord.Color.orange(), "text": f"mengajak {user.mention} tos!"},
+        "kill": {"title": "🔪 Wasted", "color": discord.Color.dark_red(), "text": f"membunuh {user.mention}!"},
+        "poke": {"title": "👉 Colek", "color": discord.Color.teal(), "text": f"mencolek {user.mention}."}
+    }
+
+    config = action_config.get(aksi.value)
+    gif_url = random.choice(gifs.get(aksi.value, []))
+    
+    embed = discord.Embed(
+        title=config["title"], 
+        description=f"{interaction.user.mention} {config['text']}", 
+        color=config["color"]
+    )
+    embed.set_image(url=gif_url)
+    embed.set_footer(text=f"Dikirim oleh {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
+    
+    await interaction.response.send_message(content=user.mention, embed=embed)
+
+bot.tree.add_command(fun_group)
 
 # --- Fitur Sosial (Profil & Reputasi) ---
 
@@ -1925,7 +2346,8 @@ async def rep(interaction: discord.Interaction, user: discord.User):
         return
 
     await bot.db.give_reputation(giver_id=giver.id, receiver_id=receiver.id)
-    await interaction.response.send_message(f"✅ Anda telah memberikan 1 poin reputasi kepada {receiver.mention}!")
+    embed = discord.Embed(description=f"✅ Anda telah memberikan 1 poin reputasi kepada {receiver.mention}!", color=discord.Color.green())
+    await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="leaderboard", description="Lihat papan peringkat server.")
 @app_commands.describe(
@@ -2030,6 +2452,7 @@ async def pay(interaction: discord.Interaction, user: discord.User, amount: app_
 
 if __name__ ==  "__main__":
     if TOKEN and DATABASE_URL:
+        keep_alive()
         bot.run(TOKEN)
     else:
         print("Error: Pastikan DISCORD_TOKEN dan DATABASE_URL sudah diatur di file .env")
