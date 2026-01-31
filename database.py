@@ -1,6 +1,7 @@
 import asyncpg
 import datetime
 import ssl
+import asyncio
 
 class DatabaseManager:
     def __init__(self, dsn: str):
@@ -20,13 +21,21 @@ class DatabaseManager:
                 ssl_ctx.check_hostname = False
                 ssl_ctx.verify_mode = ssl.CERT_NONE
 
-                self._pool = await asyncpg.create_pool(
-                    dsn=self.dsn,
-                    command_timeout=60,
-                    statement_cache_size=0,
-                    ssl=ssl_ctx
+                print("⏳ Menghubungi Database (Timeout 20s)...", flush=True)
+                self._pool = await asyncio.wait_for(
+                    asyncpg.create_pool(
+                        dsn=self.dsn,
+                        command_timeout=60,
+                        statement_cache_size=0,
+                        ssl=ssl_ctx
+                    ),
+                    timeout=20.0
                 )
-                print("✅ Berhasil terhubung ke database PostgreSQL.")
+                print("✅ Berhasil terhubung ke database PostgreSQL.", flush=True)
+            except asyncio.TimeoutError:
+                print("\n❌ ERROR TIMEOUT: Database tidak merespons dalam 20 detik.", flush=True)
+                print("👉 SOLUSI: Cek Dashboard Supabase, pastikan project statusnya 'ACTIVE' (bukan Paused).", flush=True)
+                raise
             except asyncpg.exceptions.InternalServerError as e:
                 print("❌ FATAL: Gagal membuat koneksi pool ke database.")
                 if "Tenant or user not found" in str(e):
