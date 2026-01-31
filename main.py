@@ -2397,13 +2397,26 @@ async def leaderboard(interaction: discord.Interaction, kategori: app_commands.C
         if not interaction.guild:
             await interaction.followup.send("❌ Leaderboard server hanya bisa digunakan di dalam server.")
             return
-        # Ambil list ID member di server ini (exclude bot)
-        user_ids_filter = [member.id for member in interaction.guild.members if not member.bot]
+        
+        # FIX: Pastikan cache member terisi. Jika kosong (masalah Intent/Cache), coba fetch manual.
+        members = interaction.guild.members
+        if len(members) <= 1 and interaction.guild.member_count > 1:
+            try:
+                print("🔄 Cache member kosong, mencoba fetch dari API...", flush=True)
+                members = [m async for m in interaction.guild.fetch_members(limit=None)]
+            except discord.Forbidden:
+                await interaction.followup.send("⚠️ **Error:** Bot tidak diizinkan membaca daftar member.\n👉 Aktifkan **Server Members Intent** di Discord Developer Portal.")
+                return
+
+        user_ids_filter = [member.id for member in members if not member.bot]
 
     leaderboard_data = await bot.db.get_leaderboard(sort_by=kategori.value, limit=10, user_ids=user_ids_filter)
 
     if not leaderboard_data:
-        await interaction.followup.send("Belum ada data untuk ditampilkan di papan peringkat.")
+        msg = "Belum ada data untuk ditampilkan di papan peringkat."
+        if scope_value == "server":
+            msg += "\n💡 **Info:** Leaderboard server hanya mencatat user yang sudah pernah aktif (chat/main game) di server ini."
+        await interaction.followup.send(msg)
         return
 
     title_map = {
@@ -2422,20 +2435,67 @@ async def leaderboard(interaction: discord.Interaction, kategori: app_commands.C
 
     embed = discord.Embed(
         title=f"{title_map.get(kategori.value, 'Papan Peringkat')} - {scope_title}",
-        description="Berikut adalah Top 10 pengguna teratas:",
+        description="",
         color=discord.Color.gold()
     )
+
+    # Helper format angka (1000 -> 1K, 1000000 -> 1M)
+    def format_number(num):
+        if num >= 1_000_000_000: return f"{num / 1_000_000_000:.1f}B"
+        if num >= 1_000_000: return f"{num / 1_000_000:.1f}M"
+        if num >= 1_000: return f"{num / 1_000:.1f}K"
+        return str(num)
 
     description = ""
     for i, record in enumerate(leaderboard_data):
         user_id = record['user_id']
         value = record[kategori.value]
+        rank = i + 1
         
-        user = bot.get_user(user_id) or await bot.fetch_user(user_id)
-        user_name = user.display_name if user else f"User (ID: {user_id})"
+        try:
+            user = bot.get_user(user_id) or await bot.fetch_user(user_id)
+        except:
+            user = None
         
-        emoji = "🥇" if i == 0 else "🥈" if i == 1 else "🥉" if i == 2 else f"**{i+1}.**"
-        description += f"{emoji} {user.mention} - **{value}** {unit_map.get(kategori.value)}\n"
+        user_display = user.mention if user else f"User (ID: {user_id})"
+        
+        # Rank Emoji
+        if rank == 1: rank_emoji = "🥇"
+        elif rank == 2: rank_emoji = "🥈"
+        elif rank == 3: rank_emoji = "🥉"
+        else: 
+             keycaps = {4: "4️⃣", 5: "5️⃣", 6: "6️⃣", 7: "7️⃣", 8: "8️⃣", 9: "9️⃣", 10: "🔟"}
+             rank_emoji = keycaps.get(rank, f"**{rank}.**")
+
+        # Crown for #1
+        crown = " 👑" if rank == 1 else ""
+        
+        # Format Value & Config
+        formatted_value = format_number(value)
+        
+        if kategori.value == "coins":
+            val_emoji = "💰"
+            unit = "koin"
+            title_r1 = "✨ Coin King"
+        elif kategori.value == "level":
+            val_emoji = "🆙"
+            unit = "Level"
+            title_r1 = "✨ Top Grinder"
+        elif kategori.value == "reputation":
+            val_emoji = "⭐"
+            unit = "rep"
+            title_r1 = "✨ Most Respected"
+            
+        # Construct Entry
+        description += f"{rank_emoji} {user_display}{crown}\n"
+        description += f"{val_emoji} {formatted_value} {unit}\n"
+        
+        if rank == 1:
+            description += f"{title_r1}\n"
+        
+        # Add spacing between entries (except last one)
+        if i < len(leaderboard_data) - 1:
+             description += "\n"
 
     embed.description = description
     embed.set_footer(text=f"Top 10 {scope_title} berdasarkan {kategori.name}")
