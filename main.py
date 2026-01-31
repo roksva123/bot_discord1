@@ -1622,7 +1622,7 @@ class SlotMachineView(discord.ui.View):
             return False
         return True
 
-    def create_embed(self, status: str, win_amount: int = 0) -> discord.Embed:
+    def create_embed(self, status: str, win_amount: int = 0, current_balance: int = None) -> discord.Embed:
         reel_display = ' | '.join(self.reels)
         color = discord.Color.green() if win_amount > 0 else (discord.Color.dark_grey() if "kalah" in status.lower() else discord.Color.blue())
         
@@ -1631,28 +1631,39 @@ class SlotMachineView(discord.ui.View):
         embed.add_field(name="Taruhan", value=f"{self.bet} koin")
         if win_amount > 0:
             embed.add_field(name="Kemenangan", value=f"**{win_amount} koin**")
-        embed.set_footer(text=f"Bermain sebagai: {self.author.display_name}")
+        
+        footer_text = f"Player: {self.author.display_name}"
+        if current_balance is not None:
+            footer_text += f" | Saldo: {current_balance:,}"
+        embed.set_footer(text=footer_text)
         return embed
 
     async def spin_logic(self, interaction: discord.Interaction):
+        # Gunakan interaction.client untuk akses bot instance dengan aman
+        bot_instance = interaction.client
+        
         await interaction.response.defer()
         spin_button = self.children[0]
         spin_button.disabled = True
         await interaction.edit_original_response(view=self)
 
-        user_data = await bot.db.get_user_data(self.author.id)
+        user_data = await bot_instance.db.get_user_data(self.author.id)
         if user_data['coins'] < self.bet:
             for item in self.children: item.disabled = True
             await interaction.edit_original_response(content="❌ Koinmu tidak cukup untuk memutar lagi.", embed=None, view=self)
             self.stop()
             return
-        # BUG FIX: Gunakan add_coins
-        await bot.db.add_coins(self.author.id, -self.bet)
-        await bot.db.record_game_play(self.author.id, "Slot Machine")
+        
+        # Potong taruhan
+        await bot_instance.db.add_coins(self.author.id, -self.bet)
+        await bot_instance.db.record_game_play(self.author.id, "Slot Machine")
 
         for _ in range(3):
             self.reels = [random.choice(self.emojis) for _ in range(3)]
-            await asyncio.sleep(0.4)
+            # Update tampilan saat berputar (Animasi)
+            embed = self.create_embed("🔄 Memutar...", 0)
+            await interaction.edit_original_response(embed=embed, view=self)
+            await asyncio.sleep(0.5)
 
         counts = {emoji: self.reels.count(emoji) for emoji in set(self.reels)}
         win_amount = 0
@@ -1667,10 +1678,14 @@ class SlotMachineView(discord.ui.View):
             if multiplier > 0:
                 win_amount = int(self.bet * multiplier)
                 status = f"🎉 **JACKPOT!** Kamu memenangkan **{win_amount}** koin!"
-                # BUG FIX: Gunakan add_coins
-                await bot.db.add_coins(self.author.id, win_amount)
+                # Tambahkan kemenangan
+                await bot_instance.db.add_coins(self.author.id, win_amount)
         
-        embed = self.create_embed(status, win_amount)
+        # Ambil saldo terbaru untuk ditampilkan
+        updated_user_data = await bot_instance.db.get_user_data(self.author.id)
+        current_balance = updated_user_data['coins']
+
+        embed = self.create_embed(status, win_amount, current_balance)
         spin_button.disabled = False
         await interaction.edit_original_response(embed=embed, view=self)
 
