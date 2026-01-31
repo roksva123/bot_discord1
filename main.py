@@ -61,11 +61,19 @@ class MyBot(commands.Bot):
         intents = discord.Intents.default()
         intents.message_content = True
         intents.members = True # Diperlukan untuk leaderboard server
+        
         super().__init__(command_prefix='!', intents=intents)
+        
         # Inisialisasi DatabaseManager
         self.db = DatabaseManager(dsn=DATABASE_URL)
         # Cooldown untuk on_message agar tidak membebani DB
         self.xp_cooldowns = {}
+
+    async def login(self, token: str) -> None:
+        # FIX: Bypass SSL verification dipindahkan ke sini agar dijalankan di dalam event loop
+        print("🔧 Mengatur koneksi SSL bypass...", flush=True)
+        self.http.connector = aiohttp.TCPConnector(ssl=False)
+        await super().login(token)
 
     async def setup_hook(self):
         # Hubungkan ke DB dan siapkan tabel sebelum bot siap
