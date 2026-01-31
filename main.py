@@ -2452,7 +2452,18 @@ async def pay(interaction: discord.Interaction, user: discord.User, amount: app_
 
 if __name__ ==  "__main__":
     if TOKEN and DATABASE_URL:
-        keep_alive()
-        bot.run(TOKEN)
+
+        print("🔄 Memulai sistem...")
+        try:
+            keep_alive()
+            print("✅ Web Server berjalan (Cek keep_alive.py untuk info port).")
+            print("🚀 Sedang login ke Discord...")
+            bot.run(TOKEN)
+        except discord.errors.PrivilegedIntentsRequired:
+             print("\n❌ ERROR INTENTS: Mohon aktifkan 'Message Content Intent' dan 'Server Members Intent' di Discord Developer Portal.")
+        except discord.errors.LoginFailure:
+             print("\n❌ ERROR TOKEN: Token bot tidak valid. Cek file .env.")
+        except Exception as e:
+            print(f"\n❌ BOT CRASH: {e}")
     else:
         print("Error: Pastikan DISCORD_TOKEN dan DATABASE_URL sudah diatur di file .env")

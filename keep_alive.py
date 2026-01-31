@@ -18,7 +18,10 @@ def run():
   print(f"🌍 Web Server berjalan di Port {port}!")
   print(f"👉 Jika di Laptop: Buka http://localhost:{port} di browser untuk cek.")
   print(f"👉 Jika di Cloud: Masukkan URL publik ke UptimeRobot.")
-  app.run(host='0.0.0.0', port=port)
+  try:
+      app.run(host='0.0.0.0', port=port)
+  except Exception as e:
+      print(f"⚠️ Web Server Error (Mungkin port {port} terpakai): {e}")
 
 def keep_alive():
     t = Thread(target=run)
