@@ -13,7 +13,7 @@
 3. Konfigurasi (Penting!):
    - Runtime: Python 3
    - Build Command: pip install -r requirements.txt
-   - Start Command: python main.py
+   - Start Command: python -u main.py
    - Port: 8080
 
 4. Environment Variables (Wajib diisi di Dashboard Leapcell):
@@ -22,3 +22,9 @@
      > DISCORD_TOKEN  = (Isi dengan token bot kamu)
      > DATABASE_URL   = (Isi dengan link database Supabase)
    - Klik Deploy / Save.
+
+5. Troubleshooting (Jika Bot Tidak Online):
+   - Cek tab "Logs" di Leapcell.
+   - Pastikan "Message Content Intent" dan "Server Members Intent" sudah ON di Discord Developer Portal (Bagian Bot).
+   - Pastikan Token dan Database URL benar.
+   - Jika ada error "PrivilegedIntentsRequired", itu masalah Intent.

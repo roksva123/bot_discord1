@@ -59,8 +59,14 @@ class MyBot(commands.Bot):
 
     async def setup_hook(self):
         # Hubungkan ke DB dan siapkan tabel sebelum bot siap
-        await self.db.connect()
-        await self.db.init_db()
+        print("⚙️  Sedang menghubungkan ke Database...", flush=True)
+        try:
+            await self.db.connect()
+            await self.db.init_db()
+            print("✅ Database terhubung dan tabel siap.", flush=True)
+        except Exception as e:
+            print(f"❌ Gagal inisialisasi database: {e}", flush=True)
+            raise e
 
         # Mulai background task
         self.birthday_checker.start()
@@ -70,8 +76,8 @@ class MyBot(commands.Bot):
         # await self.tree.sync()
     
     async def on_ready(self):
-        print(f'{self.user} telah online dan siap digunakan')
-        print('------')
+        print(f'✅ BOT ONLINE: {self.user} (ID: {self.user.id}) siap digunakan!', flush=True)
+        print('------', flush=True)
     
     async def close(self):
         await self.db.close()
@@ -2453,11 +2459,11 @@ async def pay(interaction: discord.Interaction, user: discord.User, amount: app_
 if __name__ ==  "__main__":
     if TOKEN and DATABASE_URL:
 
-        print("🔄 Memulai sistem...")
+        print("🔄 Memulai sistem...", flush=True)
         try:
             keep_alive()
-            print("✅ Web Server berjalan (Cek keep_alive.py untuk info port).")
-            print("🚀 Sedang login ke Discord...")
+            print("✅ Web Server berjalan (Cek keep_alive.py untuk info port).", flush=True)
+            print("🚀 Sedang login ke Discord...", flush=True)
             bot.run(TOKEN)
         except discord.errors.PrivilegedIntentsRequired:
              print("\n❌ ERROR INTENTS: Mohon aktifkan 'Message Content Intent' dan 'Server Members Intent' di Discord Developer Portal.")
