@@ -7,6 +7,8 @@ import asyncio
 import random
 from datetime import datetime, timedelta, timezone, time
 import aiohttp
+import logging
+import sys
 
 # Impor kelas DatabaseManager yang kita buat
 from database import DatabaseManager
@@ -14,6 +16,14 @@ from keep_alive import keep_alive
 
 # --- Konfigurasi & Variabel Global ---
 load_dotenv(override=True)
+
+# Setup Logging agar error muncul di Leapcell
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)s: %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+
 TOKEN = os.getenv('DISCORD_TOKEN')
 DATABASE_URL = os.getenv('DATABASE_URL')
 try:
@@ -65,7 +75,7 @@ class MyBot(commands.Bot):
             await self.db.init_db()
             print("✅ Database terhubung dan tabel siap.", flush=True)
         except Exception as e:
-            print(f"❌ Gagal inisialisasi database: {e}", flush=True)
+            logging.error(f"❌ Gagal inisialisasi database: {e}")
             raise e
 
         # Mulai background task
@@ -2466,10 +2476,10 @@ if __name__ ==  "__main__":
             print("🚀 Sedang login ke Discord...", flush=True)
             bot.run(TOKEN)
         except discord.errors.PrivilegedIntentsRequired:
-             print("\n❌ ERROR INTENTS: Mohon aktifkan 'Message Content Intent' dan 'Server Members Intent' di Discord Developer Portal.")
+             logging.critical("❌ ERROR INTENTS: Mohon aktifkan 'Message Content Intent' dan 'Server Members Intent' di Discord Developer Portal.")
         except discord.errors.LoginFailure:
-             print("\n❌ ERROR TOKEN: Token bot tidak valid. Cek file .env.")
+             logging.critical("❌ ERROR TOKEN: Token bot tidak valid. Cek file .env.")
         except Exception as e:
-            print(f"\n❌ BOT CRASH: {e}")
+            logging.critical(f"❌ BOT CRASH: {e}")
     else:
         print("Error: Pastikan DISCORD_TOKEN dan DATABASE_URL sudah diatur di file .env")
