@@ -72,7 +72,10 @@ class MyBot(commands.Bot):
     async def login(self, token: str) -> None:
         # FIX: Bypass SSL verification dipindahkan ke sini agar dijalankan di dalam event loop
         print("🔧 Mengatur koneksi SSL bypass...", flush=True)
+        # Kita harus me-reset session agar menggunakan connector baru (tanpa SSL)
         self.http.connector = aiohttp.TCPConnector(ssl=False)
+        await self.http.close() # Tutup session lama
+        self.http.recreate()    # Buat session baru dengan connector yang baru
         await super().login(token)
 
     async def setup_hook(self):
