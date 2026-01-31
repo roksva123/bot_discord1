@@ -16,16 +16,28 @@ class DatabaseManager:
         """Membuat connection pool."""
         if not self._pool:
             try:
+                # 1. Bersihkan DSN/URL dari parameter yang sering bikin error
+                clean_dsn = self.dsn
+                if "?" in clean_dsn:
+                    clean_dsn = clean_dsn.split("?")[0]
+                
+                # Debugging: Tampilkan URL yang dipakai (sensor password)
+                if "@" in clean_dsn:
+                    part1, part2 = clean_dsn.split("@")
+                    print(f"🔍 Info Koneksi: ...@{part2}", flush=True)
+                
                 # Buat SSL Context manual untuk mengatasi masalah timeout di Windows
                 ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
                 ssl_ctx.check_hostname = False
                 ssl_ctx.verify_mode = ssl.CERT_NONE
 
-                print("⏳ Menghubungi Database (Timeout 20s)...", flush=True)
+                print("⏳ Menghubungi Database...", flush=True)
+                
+                # Gunakan clean_dsn
                 self._pool = await asyncio.wait_for(
                     asyncpg.create_pool(
-                        dsn=self.dsn,
-                        command_timeout=60,
+                        dsn=clean_dsn, 
+                        command_timeout=60, 
                         statement_cache_size=0,
                         ssl=ssl_ctx
                     ),
@@ -34,18 +46,20 @@ class DatabaseManager:
                 print("✅ Berhasil terhubung ke database PostgreSQL.", flush=True)
             except asyncio.TimeoutError:
                 print("\n❌ ERROR TIMEOUT: Database tidak merespons dalam 20 detik.", flush=True)
-                print("👉 SOLUSI: Cek Dashboard Supabase, pastikan project statusnya 'ACTIVE' (bukan Paused).", flush=True)
+                print("👉 SOLUSI: Cek apakah Hostname/Port di DATABASE_URL benar.", flush=True)
+                raise
+            except asyncpg.InvalidPasswordError:
+                print("\n❌ ERROR PASSWORD: Password database salah!", flush=True)
+                print("👉 SOLUSI: Cek file .env atau Environment Variables di Leapcell.", flush=True)
+                print("   Pastikan password tidak mengandung karakter aneh atau sudah di-URL Encode.", flush=True)
                 raise
             except asyncpg.exceptions.InternalServerError as e:
                 print("❌ FATAL: Gagal membuat koneksi pool ke database.")
                 if "Tenant or user not found" in str(e):
                     print("\n--- ANALISIS KESALAHAN KONEKSI SUPABASE ---")
-                    print("Error 'Tenant or user not found' mengindikasikan ada kesalahan pada variabel 'DATABASE_URL' di file .env Anda.")
-                    print("Pastikan detail berikut sudah benar:")
-                    print(" - Hostname (bagian ...pooler.supabase.com), Username, Password, dan Port.")
-                    print(" - Pastikan juga proyek Supabase Anda tidak sedang di-pause.")
-                    print("\nBot tidak dapat dimulai tanpa koneksi database yang valid. Harap perbaiki .env dan restart bot.")
-                raise  # Hentikan eksekusi bot
+                    print("👉 Username/Project ID salah. Cek kembali Connection String di Supabase.")
+                    print("   Pastikan formatnya: postgresql://postgres.[PROJECT-ID]:[PASSWORD]@...")
+                raise
             except Exception as e:
                 print(f"❌ FATAL: Terjadi error tak terduga saat menghubungkan ke database: {e}")
                 raise
