@@ -2413,17 +2413,29 @@ async def leaderboard(interaction: discord.Interaction, kategori: app_commands.C
             await interaction.followup.send("❌ Leaderboard server hanya bisa digunakan di dalam server.")
             return
         
-        # FIX: Pastikan cache member terisi. Jika kosong (masalah Intent/Cache), coba fetch manual.
+        # LOGIKA BARU: Cek kelengkapan cache member
+        # Jika jumlah member di cache lebih sedikit dari total member server, kita fetch ulang
+        current_cache_count = len(interaction.guild.members)
+        server_member_count = interaction.guild.member_count or current_cache_count
         members = interaction.guild.members
-        if len(members) <= 1 and interaction.guild.member_count > 1:
+        
+        if server_member_count > current_cache_count:
             try:
-                print("🔄 Cache member kosong, mencoba fetch dari API...", flush=True)
+                print(f"🔄 Cache member tidak lengkap ({current_cache_count}/{server_member_count}). Fetching dari API...", flush=True)
                 members = [m async for m in interaction.guild.fetch_members(limit=None)]
+                print(f"✅ Berhasil fetch {len(members)} member.", flush=True)
             except discord.Forbidden:
                 await interaction.followup.send("⚠️ **Error:** Bot tidak diizinkan membaca daftar member.\n👉 Aktifkan **Server Members Intent** di Discord Developer Portal.")
                 return
+            except Exception as e:
+                print(f"⚠️ Gagal fetch member: {e}")
+                # Lanjut dengan cache yang ada
 
         user_ids_filter = [member.id for member in members if not member.bot]
+        
+        if not user_ids_filter:
+             await interaction.followup.send("⚠️ **Info:** Tidak ditemukan member manusia di server ini (atau Intent belum aktif).")
+             return
 
     leaderboard_data = await bot.db.get_leaderboard(sort_by=kategori.value, limit=10, user_ids=user_ids_filter)
 
