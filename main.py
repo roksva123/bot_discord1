@@ -19,7 +19,7 @@ load_dotenv(override=True)
 
 # Setup Logging agar error muncul di Leapcell
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='[%(asctime)s] %(levelname)s: %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
@@ -2469,6 +2469,8 @@ async def pay(interaction: discord.Interaction, user: discord.User, amount: app_
 if __name__ ==  "__main__":
     if TOKEN and DATABASE_URL:
 
+        print(f"🐍 Python: {sys.version.split()[0]}")
+        print(f"🤖 Discord.py: {discord.__version__}")
         print("🔄 Memulai sistem...", flush=True)
         try:
             keep_alive()
