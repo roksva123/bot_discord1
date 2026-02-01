@@ -75,7 +75,6 @@ class MyBot(commands.Bot):
         # Kita harus me-reset session agar menggunakan connector baru (tanpa SSL)
         self.http.connector = aiohttp.TCPConnector(ssl=False)
         await self.http.close() # Tutup session lama
-        self.http.recreate()    # Buat session baru dengan connector yang baru
         await super().login(token)
 
     async def setup_hook(self):
