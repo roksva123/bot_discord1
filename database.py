@@ -102,6 +102,18 @@ class DatabaseManager:
                     PRIMARY KEY (user_id, game_name)
                 );
             """)
+            # Tabel Active Quests
+            await connection.execute("""
+                CREATE TABLE IF NOT EXISTS active_quests (
+                    user_id BIGINT PRIMARY KEY,
+                    quest_type TEXT,
+                    target INT,
+                    progress INT DEFAULT 0,
+                    reward INT,
+                    difficulty TEXT,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+            """)
             print("🛠️  Tabel 'economy' siap digunakan.")
 
     async def get_user_data(self, user_id: int):
@@ -247,3 +259,37 @@ class DatabaseManager:
                 WHERE user_id = $1 
                 ORDER BY total_plays DESC
             """, user_id)
+
+    async def get_active_quest(self, user_id: int):
+        """Mengambil quest aktif user."""
+        async with self._pool.acquire() as connection:
+            return await connection.fetchrow("SELECT * FROM active_quests WHERE user_id = $1", user_id)
+
+    async def create_quest(self, user_id: int, quest_type: str, target: int, reward: int, difficulty: str):
+        """Membuat quest baru untuk user."""
+        async with self._pool.acquire() as connection:
+            await connection.execute("""
+                INSERT INTO active_quests (user_id, quest_type, target, progress, reward, difficulty, created_at)
+                VALUES ($1, $2, $3, 0, $4, $5, NOW())
+                ON CONFLICT (user_id) DO UPDATE 
+                SET quest_type = $2, target = $3, progress = 0, reward = $4, difficulty = $5, created_at = NOW()
+            """, user_id, quest_type, target, reward, difficulty)
+
+    async def update_quest_progress(self, user_id: int, quest_type: str, amount: int = 1):
+        """Mengupdate progress quest. Return dict quest jika selesai, else None."""
+        async with self._pool.acquire() as connection:
+            quest = await connection.fetchrow("SELECT * FROM active_quests WHERE user_id = $1 AND quest_type = $2", user_id, quest_type)
+            if not quest:
+                return None
+
+            new_progress = quest['progress'] + amount
+            
+            if new_progress >= quest['target']:
+                # Quest Selesai
+                await connection.execute("DELETE FROM active_quests WHERE user_id = $1", user_id)
+                # Berikan reward
+                await connection.execute("UPDATE economy SET coins = coins + $1 WHERE user_id = $2", quest['reward'], user_id)
+                return quest # Return data quest yang selesai
+            else:
+                await connection.execute("UPDATE active_quests SET progress = $1 WHERE user_id = $2", new_progress, user_id)
+                return None

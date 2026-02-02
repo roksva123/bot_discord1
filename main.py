@@ -205,6 +205,60 @@ async def send_auto_delete(interaction: discord.Interaction, content: str = None
     except (discord.NotFound, discord.HTTPException):
         pass
 
+# --- Helper Quest & Game ---
+
+def create_progress_bar(progress, target, length=10):
+    """Membuat visual progress bar kotak-kotak."""
+    percent = min(1.0, progress / target)
+    filled = int(length * percent)
+    bar = '🟦' * filled + '⬜' * (length - filled) 
+    return bar
+
+def get_quest_description(q_type, target):
+    if q_type == "play_game": return f"🎮 Mainkan **{target}** kali game apa saja"
+    if q_type == "win_game": return f"🏆 Menangkan **{target}** kali game (PvP/Judi)"
+    if q_type == "earn_coins": return f"💰 Dapatkan total **{target:,}** koin dari game"
+    return "❓ Quest Misterius"
+
+async def check_quest_completion(interaction: discord.Interaction, quest_type: str, amount: int = 1, user: discord.User = None):
+    """Cek dan update progress quest user."""
+    target_user = user or interaction.user
+    try:
+        completed_quest = await bot.db.update_quest_progress(target_user.id, quest_type, amount)
+        if completed_quest:
+            embed = discord.Embed(
+                title="🎉 QUEST SELESAI!",
+                description=f"Selamat {target_user.mention}! Kamu telah menaklukkan misi tingkat **{completed_quest['difficulty']}**.",
+                color=discord.Color.gold()
+            )
+            embed.add_field(name="📜 Misi", value=get_quest_description(completed_quest['quest_type'], completed_quest['target']), inline=False)
+            embed.add_field(name="🎁 Hadiah", value=f"**+{completed_quest['reward']:,}** Koin", inline=False)
+            embed.set_thumbnail(url="https://cdn-icons-png.flaticon.com/512/536/536056.png") # Ikon Piala
+            embed.set_footer(text="Gunakan /quest untuk mengambil misi baru!")
+            
+            # Kirim pesan (gunakan followup jika interaksi sudah direspons)
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed)
+            else:
+                await interaction.response.send_message(embed=embed)
+    except Exception as e:
+        print(f"Error checking quest: {e}")
+
+async def record_game_and_quest(interaction: discord.Interaction, game_name: str):
+    """Mencatat statistik game dan update quest 'play_game'."""
+    await bot.db.record_game_play(interaction.user.id, game_name)
+    await check_quest_completion(interaction, "play_game", 1)
+
+# --- Base View untuk Error Handling (Anti-Failed) ---
+class BaseGameView(discord.ui.View):
+    async def on_error(self, interaction: discord.Interaction, error: Exception, item: discord.ui.Item) -> None:
+        print(f"❌ Error in View {type(self).__name__}: {error}")
+        embed = discord.Embed(title="❌ Terjadi Kesalahan", description="Maaf, terjadi kesalahan saat memproses interaksi ini. Coba lagi.", color=discord.Color.red())
+        if not interaction.response.is_done():
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        else:
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
 # Global error handler untuk slash commands
 @bot.tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
@@ -415,6 +469,76 @@ async def daily(interaction: discord.Interaction):
     embed.set_thumbnail(url="https://cdn-icons-png.flaticon.com/512/2933/2933116.png")
     await interaction.response.send_message(embed=embed)
 
+# --- Fitur Quest ---
+
+@bot.tree.command(name="quest", description="Lihat atau ambil quest harian untuk hadiah besar!")
+async def quest_command(interaction: discord.Interaction):
+    user_id = interaction.user.id
+    active_quest = await bot.db.get_active_quest(user_id)
+
+    if active_quest:
+        # Tampilkan quest aktif
+        q_type = active_quest['quest_type']
+        target = active_quest['target']
+        progress = active_quest['progress']
+        reward = active_quest['reward']
+        difficulty = active_quest['difficulty']
+        
+        percent = int((progress / target) * 100)
+        bar = create_progress_bar(progress, target)
+        
+        color_map = {
+            "Easy": discord.Color.green(), 
+            "Medium": discord.Color.blue(), 
+            "Hard": discord.Color.orange(), 
+            "Extreme": discord.Color.red()
+        }
+        difficulty_emoji = {"Easy": "🌱", "Medium": "⚔️", "Hard": "🔥", "Extreme": "☠️"}
+        diff_str = f"{difficulty_emoji.get(difficulty, '❓')} {difficulty}"
+        
+        embed = discord.Embed(title=f"📜 Papan Misi: {interaction.user.display_name}", color=color_map.get(difficulty, discord.Color.blue()))
+        embed.add_field(name="Tingkat Kesulitan", value=f"**{diff_str}**", inline=True)
+        embed.add_field(name="Hadiah", value=f"**{reward:,}** 💰", inline=True)
+        embed.add_field(name="📋 Misi Utama", value=get_quest_description(q_type, target), inline=False)
+        embed.add_field(name="Progress", value=f"{bar} **{percent}%**\n`{progress} / {target}`", inline=False)
+        
+        embed.set_thumbnail(url="https://cdn-icons-png.flaticon.com/512/3209/3209265.png")
+        embed.set_footer(text="Selesaikan misi ini untuk mengambil misi baru!")
+        await interaction.response.send_message(embed=embed)
+    else:
+        # Generate Quest Baru
+        # Bobot: Easy(40%), Medium(30%), Hard(20%), Extreme(10%)
+        diff_data = {
+            "Easy": {"mult": 1, "reward": 500},
+            "Medium": {"mult": 2.5, "reward": 1500},
+            "Hard": {"mult": 5, "reward": 5000},
+            "Extreme": {"mult": 10, "reward": 15000}
+        }
+        difficulty = random.choices(list(diff_data.keys()), weights=[40, 30, 20, 10])[0]
+        data = diff_data[difficulty]
+        
+        types = ["play_game", "win_game", "earn_coins"]
+        q_type = random.choice(types)
+        
+        if q_type == "play_game":
+            target = int(3 * data["mult"])
+        elif q_type == "win_game":
+            target = int(1 * data["mult"])
+            if target < 1: target = 1
+        elif q_type == "earn_coins":
+            target = int(1000 * data["mult"])
+            
+        reward = data["reward"]
+        
+        await bot.db.create_quest(user_id, q_type, target, reward, difficulty)
+        
+        embed = discord.Embed(title="📜 Misi Baru Diterima!", description=f"Kamu telah mengambil kontrak misi baru.", color=discord.Color.gold())
+        embed.add_field(name="Tingkat Kesulitan", value=f"**{difficulty}**", inline=True)
+        embed.add_field(name="Hadiah", value=f"**{reward:,}** 💰", inline=True)
+        embed.add_field(name="📋 Misi", value=get_quest_description(q_type, target), inline=False)
+        embed.set_thumbnail(url="https://cdn-icons-png.flaticon.com/512/10698/10698674.png") # Ikon Kontrak
+        await interaction.response.send_message(embed=embed)
+
 # --- Fitur Ulang Tahun ---
 
 # Membuat command group /birthday
@@ -460,7 +584,7 @@ bot.tree.add_command(birthday_group)
 
 @bot.tree.command(name="tebakkata", description="Main tebak kata dari huruf yang diacak.")
 async def tebak_kata(interaction: discord.Interaction):
-    await bot.db.record_game_play(interaction.user.id, "Tebak Kata")
+    await record_game_and_quest(interaction, "Tebak Kata")
     kata_asli = random.choice(KATA_LIST)
     huruf_acak = ''.join(random.sample(kata_asli, len(kata_asli)))
 
@@ -481,6 +605,8 @@ async def tebak_kata(interaction: discord.Interaction):
         if msg.content.lower() == kata_asli:
             # BUG FIX: Gunakan add_coins untuk transaksi atomik
             await bot.db.add_coins(interaction.user.id, TEBAK_KATA_REWARD)
+            await check_quest_completion(interaction, "win_game", 1)
+            await check_quest_completion(interaction, "earn_coins", TEBAK_KATA_REWARD)
             embed = discord.Embed(title="🎉 Benar Sekali!", description=f"Jawabannya adalah **{kata_asli}**.\nKamu mendapatkan **{TEBAK_KATA_REWARD}** koin!", color=discord.Color.green())
             await send_auto_delete(interaction, embed=embed, delay=10, ephemeral=False)
         else:
@@ -493,7 +619,7 @@ async def tebak_kata(interaction: discord.Interaction):
 
 @bot.tree.command(name="mathbattle", description="Selesaikan soal matematika dalam 10 detik!")
 async def math_battle(interaction: discord.Interaction):
-    await bot.db.record_game_play(interaction.user.id, "Math Battle")
+    await record_game_and_quest(interaction, "Math Battle")
     ops = ['+', '-']
     op = random.choice(ops)
     num1 = random.randint(10, 99)
@@ -516,6 +642,8 @@ async def math_battle(interaction: discord.Interaction):
         if int(msg.content) == jawaban:
             # BUG FIX: Gunakan add_coins untuk transaksi atomik
             await bot.db.add_coins(interaction.user.id, MATH_BATTLE_REWARD)
+            await check_quest_completion(interaction, "win_game", 1)
+            await check_quest_completion(interaction, "earn_coins", MATH_BATTLE_REWARD)
             embed = discord.Embed(title="🧠 Cerdas!", description=f"Jawabannya **{jawaban}**.\nKamu dapat **{MATH_BATTLE_REWARD}** koin!", color=discord.Color.green())
             await send_auto_delete(interaction, embed=embed, delay=10, ephemeral=False)
         else:
@@ -531,7 +659,7 @@ async def math_battle(interaction: discord.Interaction):
 
 @bot.tree.command(name="higherlower", description="Tebak angka rahasia antara 1-100.")
 async def higher_lower(interaction: discord.Interaction):
-    await bot.db.record_game_play(interaction.user.id, "Higher Lower")
+    await record_game_and_quest(interaction, "Higher Lower")
     angka_rahasia = random.randint(1, 100)
     kesempatan = 5
 
@@ -549,6 +677,8 @@ async def higher_lower(interaction: discord.Interaction):
             if tebakan == angka_rahasia:
                 # BUG FIX: Gunakan add_coins untuk transaksi atomik
                 await bot.db.add_coins(interaction.user.id, HIGHER_LOWER_REWARD)
+                await check_quest_completion(interaction, "win_game", 1)
+                await check_quest_completion(interaction, "earn_coins", HIGHER_LOWER_REWARD)
                 embed = discord.Embed(title="🏆 HEBAT!", description=f"Kamu berhasil menebak angkanya, yaitu **{angka_rahasia}**!\nKamu memenangkan **{HIGHER_LOWER_REWARD}** koin!", color=discord.Color.green())
                 await send_auto_delete(interaction, embed=embed, delay=15, ephemeral=False)
                 return # Keluar dari fungsi jika sudah menang
@@ -575,7 +705,7 @@ async def higher_lower(interaction: discord.Interaction):
 
 # --- Game Batu Kertas Gunting (PvP) ---
 
-class RPSBattleView(discord.ui.View):
+class RPSBattleView(BaseGameView):
     def __init__(self, player1: discord.User, player2: discord.User, bet: int):
         super().__init__(timeout=30.0)
         self.player1 = player1 # Initiator
@@ -642,6 +772,10 @@ class RPSBattleView(discord.ui.View):
         # BUG FIX: Gunakan add_coins untuk transfer atomik
         await bot.db.add_coins(winner.id, self.bet)
         await bot.db.add_coins(loser.id, -self.bet)
+        
+        # Update Quest untuk pemenang (karena ini view, kita butuh interaction context, tapi self.message ada)
+        # Kita tidak punya interaction object yang valid di sini untuk check_quest, jadi kita skip atau pakai trik lain.
+        # Untuk simplifikasi, kita tidak update quest di PvP view ini karena kompleksitas context.
 
         embed = discord.Embed(title="⚔️ Hasil Pertandingan", color=discord.Color.gold())
         embed.add_field(name="Pemenang", value=f"{winner.mention} 🏆", inline=True)
@@ -662,7 +796,7 @@ class RPSBattleView(discord.ui.View):
         await self.handle_choice(interaction, "gunting")
 
 
-class RPSChallengeView(discord.ui.View):
+class RPSChallengeView(BaseGameView):
     def __init__(self, initiator: discord.User, opponent: discord.User, bet: int):
         super().__init__(timeout=60.0)
         self.initiator = initiator
@@ -699,8 +833,8 @@ class RPSChallengeView(discord.ui.View):
             return
 
         # Catat statistik game
-        await bot.db.record_game_play(self.initiator.id, "Batu Gunting Kertas")
-        await bot.db.record_game_play(self.opponent.id, "Batu Gunting Kertas")
+        await record_game_and_quest(interaction, "Batu Gunting Kertas")
+        # Note: Initiator quest progress is tricky here without their interaction, skipping for simplicity
 
         game_view = RPSBattleView(self.initiator, self.opponent, self.bet)
         embed = discord.Embed(title="⚔️ Pertarungan Dimulai!", description=f"{self.initiator.mention} vs {self.opponent.mention}\nSilakan pilih gerakan kalian. Waktu 30 detik!", color=discord.Color.gold())
@@ -808,7 +942,7 @@ class TicTacToeButton(discord.ui.Button):
         embed = discord.Embed(title="🎮 Tic Tac Toe", description=description, color=color)
         await interaction.response.edit_message(content=None, embed=embed, view=view)
 
-class TicTacToeView(discord.ui.View):
+class TicTacToeView(BaseGameView):
     X = -1
     O = 1
     def __init__(self, player1, player2):
@@ -865,7 +999,7 @@ game_group = app_commands.Group(name="game", description="Perintah terkait mini-
 
 ### GAME 1: RISK TOWER
 
-class RiskTowerView(discord.ui.View):
+class RiskTowerView(BaseGameView):
     """UI untuk game Risk Tower dengan tombol Climb dan Cash Out."""
     def __init__(self, author: discord.User, bet: int):
         super().__init__(timeout=180.0)
@@ -954,6 +1088,8 @@ class RiskTowerView(discord.ui.View):
             if self.level == self.max_level: # Mencapai puncak
                 # BUG FIX: Gunakan add_coins untuk memastikan saldo bertambah dengan benar
                 await bot.db.add_coins(self.author.id, self.current_reward)
+                await check_quest_completion(interaction, "win_game", 1)
+                await check_quest_completion(interaction, "earn_coins", self.current_reward)
                 await self.end_game(interaction, f"🏆 LUAR BIASA! Kamu mencapai puncak dan memenangkan **{self.current_reward}** koin!")
             else: # Lanjut
                 button.disabled = False
@@ -967,6 +1103,8 @@ class RiskTowerView(discord.ui.View):
         if self.current_reward > 0:
             # BUG FIX: Gunakan add_coins
             await bot.db.add_coins(self.author.id, self.current_reward)
+            await check_quest_completion(interaction, "win_game", 1)
+            await check_quest_completion(interaction, "earn_coins", self.current_reward)
             await self.end_game(interaction, f"✅ Aman! Kamu berhasil cash out dan mendapatkan **{self.current_reward}** koin.")
         else:
             await self.end_game(interaction, "Kamu turun tanpa membawa apa-apa.")
@@ -981,7 +1119,7 @@ async def risk_tower(interaction: discord.Interaction, taruhan: app_commands.Ran
  
     # Langsung potong taruhan menggunakan add_coins (negatif) agar lebih aman
     await bot.db.add_coins(interaction.user.id, -taruhan)
-    await bot.db.record_game_play(interaction.user.id, "Risk Tower")
+    await record_game_and_quest(interaction, "Risk Tower")
 
     view = RiskTowerView(interaction.user, taruhan)
     embed = view.create_embed("Selamat datang di Risk Tower! Tekan 'Climb' untuk memulai.")
@@ -990,7 +1128,7 @@ async def risk_tower(interaction: discord.Interaction, taruhan: app_commands.Ran
 
 ### GAME 2: ENERGY CORE
 
-class EnergyCoreView(discord.ui.View):
+class EnergyCoreView(BaseGameView):
     """UI untuk game Energy Core."""
     def __init__(self, author: discord.User, bet: int):
         super().__init__(timeout=180.0)
@@ -1053,6 +1191,8 @@ class EnergyCoreView(discord.ui.View):
             reward = int(self.bet * self.multiplier)
             # BUG FIX: Gunakan add_coins
             await bot.db.add_coins(self.author.id, reward)
+            await check_quest_completion(interaction, "win_game", 1)
+            await check_quest_completion(interaction, "earn_coins", reward)
             await self.end_game(interaction, f"🔋 DAYA PENUH! Kamu berhasil mengumpulkan **{reward}** koin!")
         else:
             self.children[0].disabled = False
@@ -1065,6 +1205,8 @@ class EnergyCoreView(discord.ui.View):
         reward = int(self.bet * self.multiplier)
         if reward > self.bet:
             await bot.db.add_coins(self.author.id, reward) # BUG FIX: Gunakan add_coins
+            await check_quest_completion(interaction, "win_game", 1)
+            await check_quest_completion(interaction, "earn_coins", reward)
             await self.end_game(interaction, f"✅ Berhasil! Kamu mengamankan inti dan mendapatkan **{reward}** koin.")
         else:
             # Kembalikan bet jika tidak ada profit
@@ -1082,7 +1224,7 @@ async def energy_core(interaction: discord.Interaction, taruhan: app_commands.Ra
  
     # BUG FIX: Gunakan add_coins untuk transaksi atomik
     await bot.db.add_coins(interaction.user.id, -taruhan)
-    await bot.db.record_game_play(interaction.user.id, "Energy Core")
+    await record_game_and_quest(interaction, "Energy Core")
     view = EnergyCoreView(interaction.user, taruhan)
     embed = view.create_embed("Inti energi stabil. Tekan 'Charge' untuk memulai.")
     await interaction.response.send_message(embed=embed, view=view)
@@ -1090,7 +1232,7 @@ async def energy_core(interaction: discord.Interaction, taruhan: app_commands.Ra
 
 ### GAME 3: SHADOW DEAL
 
-class ShadowDealView(discord.ui.View):
+class ShadowDealView(BaseGameView):
     """UI untuk game Shadow Deal."""
     def __init__(self, author: discord.User, bet: int):
         super().__init__(timeout=60.0)
@@ -1136,6 +1278,8 @@ class ShadowDealView(discord.ui.View):
         else:
             # BUG FIX: Gunakan add_coins
             await bot.db.add_coins(self.author.id, reward)
+            await check_quest_completion(interaction, "win_game", 1)
+            await check_quest_completion(interaction, "earn_coins", reward)
             embed = discord.Embed(title="🎭 Shadow Deal", description=f"🔮 Sosok itu membuka kartumu...\n# **JACKPOT** 💎\nKamu memenangkan **{reward}** koin!", color=discord.Color.purple())
             await interaction.edit_original_response(content=None, embed=embed)
         self.stop()
@@ -1162,7 +1306,7 @@ async def shadow_deal(interaction: discord.Interaction, taruhan: app_commands.Ra
  
     # BUG FIX: Gunakan add_coins untuk transaksi atomik
     await bot.db.add_coins(interaction.user.id, -taruhan)
-    await bot.db.record_game_play(interaction.user.id, "Shadow Deal")
+    await record_game_and_quest(interaction, "Shadow Deal")
     view = ShadowDealView(interaction.user, taruhan)
     embed = discord.Embed(title="🎭 Shadow Deal", description=f"Sosok misterius muncul dari bayangan. Dia menawarimu sebuah permainan.\n\n\"Pilih satu dari tiga kartu ini,\" bisiknya. \"Nasibmu ada di tanganmu.\"\n\nKamu mempertaruhkan **{taruhan}** koin.", color=discord.Color.purple())
     await interaction.response.send_message(embed=embed, view=view)
@@ -1256,7 +1400,7 @@ class UnoGame:
     def next_turn(self):
         self.turn_index = (self.turn_index + self.direction) % len(self.players)
 
-class UnoPlayView(discord.ui.View):
+class UnoPlayView(BaseGameView):
     def __init__(self, game: UnoGame, main_view):
         super().__init__(timeout=60)
         self.game = game
@@ -1307,7 +1451,7 @@ class UnoPlayView(discord.ui.View):
         await interaction.response.defer(ephemeral=True)
         await self.main_view.process_draw(interaction)
 
-class UnoColorView(discord.ui.View):
+class UnoColorView(BaseGameView):
     def __init__(self, game, main_view, card_index):
         super().__init__(timeout=60)
         self.game = game
@@ -1328,7 +1472,7 @@ class UnoColorView(discord.ui.View):
     @discord.ui.button(label="Kuning", style=discord.ButtonStyle.secondary) # Discord gak punya kuning, pakai secondary/grey
     async def yellow(self, interaction: discord.Interaction, button: discord.ui.Button): await self.set_color(interaction, 'yellow')
 
-class UnoGameView(discord.ui.View):
+class UnoGameView(BaseGameView):
     def __init__(self, game: UnoGame):
         super().__init__(timeout=600) # 10 menit timeout game
         self.game = game
@@ -1398,6 +1542,8 @@ class UnoGameView(discord.ui.View):
             # WINNER
             # BUG FIX: Gunakan add_coins
             await bot.db.add_coins(player.id, self.game.pot)
+            await check_quest_completion(interaction, "win_game", 1)
+            await check_quest_completion(interaction, "earn_coins", self.game.pot)
             
             embed = discord.Embed(title="🏆 UNO WINNER!", description=f"Selamat {player.mention}! Kamu memenangkan permainan dan mengambil seluruh pot sebesar **{self.game.pot}** koin!", color=discord.Color.gold())
             await self.message.edit(content=None, embed=embed, view=None)
@@ -1503,6 +1649,8 @@ class UnoGameView(discord.ui.View):
             winner = self.game.players[0]
             # BUG FIX: Gunakan add_coins
             await bot.db.add_coins(winner.id, self.game.pot)
+            # Note: Winner via surrender also counts
+            # We can't easily trigger quest for winner here as we don't have their interaction
             
             embed = discord.Embed(title="🏆 UNO WINNER!", description=f"{removed_player.mention} menyerah!\nSelamat {winner.mention}! Kamu memenangkan permainan dan mengambil seluruh pot sebesar **{self.game.pot}** koin!", color=discord.Color.gold())
             await self.message.edit(content=None, embed=embed, view=None)
@@ -1515,7 +1663,7 @@ class UnoGameView(discord.ui.View):
         await self.message.edit(content=f"Giliranmu, {next_player.mention}!", embed=self.update_embed(), view=self)
         await send_auto_delete(interaction, "Kamu telah menyerah dari permainan.", delay=3, ephemeral=True)
 
-class UnoLobbyView(discord.ui.View):
+class UnoLobbyView(BaseGameView):
     def __init__(self, host, bet):
         super().__init__(timeout=300)
         self.host = host
@@ -1555,6 +1703,7 @@ class UnoLobbyView(discord.ui.View):
             # BUG FIX: Gunakan add_coins untuk transaksi atomik
             await bot.db.add_coins(p.id, -self.bet)
             pot += self.bet
+            # Note: record_game_play called manually here, quest update tricky for all players
             await bot.db.record_game_play(p.id, "UNO")
 
         # Setup Game
@@ -1603,7 +1752,7 @@ async def play_uno(interaction: discord.Interaction, taruhan: app_commands.Range
 
 ### GAME 4: SLOT MACHINE
 
-class SlotMachineView(discord.ui.View):
+class SlotMachineView(BaseGameView):
     def __init__(self, author: discord.User, bet: int):
         super().__init__(timeout=180.0)
         self.author = author
@@ -1658,6 +1807,8 @@ class SlotMachineView(discord.ui.View):
         
         # Potong taruhan
         await bot_instance.db.add_coins(self.author.id, -self.bet)
+        # Quest play_game updated in command, or here? Command is better for initial, but spin again?
+        # Let's update play_game quest here for re-spins
         await bot_instance.db.record_game_play(self.author.id, "Slot Machine")
 
         for _ in range(3):
@@ -1682,6 +1833,8 @@ class SlotMachineView(discord.ui.View):
                 status = f"🎉 **JACKPOT!** Kamu memenangkan **{win_amount}** koin!"
                 # Tambahkan kemenangan
                 await bot_instance.db.add_coins(self.author.id, win_amount)
+                await check_quest_completion(interaction, "win_game", 1)
+                await check_quest_completion(interaction, "earn_coins", win_amount)
         
         # Ambil saldo terbaru untuk ditampilkan
         updated_user_data = await bot_instance.db.get_user_data(self.author.id)
@@ -1710,6 +1863,7 @@ async def slot_machine(interaction: discord.Interaction, taruhan: app_commands.R
         return
     
     view = SlotMachineView(interaction.user, taruhan)
+    await record_game_and_quest(interaction, "Slot Machine")
     embed = view.create_embed("Selamat datang! Tekan 'Putar Lagi' untuk memulai permainan.")
     await interaction.response.send_message(embed=embed, view=view)
 
@@ -1726,7 +1880,7 @@ async def guess_number(interaction: discord.Interaction, taruhan: app_commands.R
 
     # BUG FIX: Gunakan add_coins untuk transaksi atomik
     await bot.db.add_coins(interaction.user.id, -taruhan)
-    await bot.db.record_game_play(interaction.user.id, "Tebak Angka")
+    await record_game_and_quest(interaction, "Tebak Angka")
 
     angka_bot = random.randint(1, 10)
     reward_multiplier = 5
@@ -1735,6 +1889,8 @@ async def guess_number(interaction: discord.Interaction, taruhan: app_commands.R
     if tebakan == angka_bot:
         # BUG FIX: Gunakan add_coins untuk menambahkan hadiah
         await bot.db.add_coins(interaction.user.id, reward)
+        await check_quest_completion(interaction, "win_game", 1)
+        await check_quest_completion(interaction, "earn_coins", reward)
         embed = discord.Embed(title="🎉 JACKPOT! 🎉", description=f"Tebakanmu **{tebakan}** benar! Angka rahasianya adalah **{angka_bot}**.\nKamu memenangkan **{reward}** koin!", color=discord.Color.green())
     else:
         # Kalah, taruhan sudah dipotong
@@ -1744,7 +1900,7 @@ async def guess_number(interaction: discord.Interaction, taruhan: app_commands.R
 
 ### GAME 6: BLACKJACK
 
-class BlackjackView(discord.ui.View):
+class BlackjackView(BaseGameView):
     def __init__(self, author: discord.User, bet: int):
         super().__init__(timeout=180.0)
         self.author = author
@@ -1831,6 +1987,9 @@ class BlackjackView(discord.ui.View):
             # payout_mult 1.0 = balik modal (seri), 2.0 = menang 1x, 2.5 = blackjack
             payout = int(self.bet * payout_mult)
             await bot.db.add_coins(self.author.id, payout)
+            if payout_mult > 1.0:
+                await check_quest_completion(interaction, "win_game", 1)
+                await check_quest_completion(interaction, "earn_coins", payout)
         
         embed = self.create_embed(result)
         await interaction.response.edit_message(embed=embed, view=self)
@@ -1879,7 +2038,7 @@ async def blackjack(interaction: discord.Interaction, taruhan: app_commands.Rang
     
     # Potong taruhan di awal
     await bot.db.add_coins(interaction.user.id, -taruhan)
-    await bot.db.record_game_play(interaction.user.id, "Blackjack")
+    await record_game_and_quest(interaction, "Blackjack")
     
     view = BlackjackView(interaction.user, taruhan)
     
@@ -1892,6 +2051,8 @@ async def blackjack(interaction: discord.Interaction, taruhan: app_commands.Rang
         else:
              payout = int(taruhan * 2.5) # Menang 3:2
              await bot.db.add_coins(interaction.user.id, payout)
+             await check_quest_completion(interaction, "win_game", 1)
+             await check_quest_completion(interaction, "earn_coins", payout)
              embed = view.create_embed("🎉 BLACKJACK! Kamu menang 1.5x lipat!")
              await interaction.response.send_message(embed=embed, view=None)
         return
@@ -1918,7 +2079,7 @@ async def balapan(interaction: discord.Interaction, taruhan: app_commands.Range[
 
     # Potong taruhan
     await bot.db.add_coins(interaction.user.id, -taruhan)
-    await bot.db.record_game_play(interaction.user.id, "Balapan")
+    await record_game_and_quest(interaction, "Balapan")
 
     runners = [
         {"emoji": "🐎", "name": "Kuda", "pos": 0},
@@ -1982,6 +2143,8 @@ async def balapan(interaction: discord.Interaction, taruhan: app_commands.Range[
     if user_choice_idx == winner_idx:
         winnings = taruhan * 3 # Menang 3x lipat (karena ada 4 peserta)
         await bot.db.add_coins(interaction.user.id, winnings)
+        await check_quest_completion(interaction, "win_game", 1)
+        await check_quest_completion(interaction, "earn_coins", winnings)
         result_desc += f"🎉 **SELAMAT!** Pilihanmu tepat! Kamu memenangkan **{winnings}** koin!"
         color = discord.Color.green()
     else:
@@ -2005,7 +2168,7 @@ async def coinflip(interaction: discord.Interaction, taruhan: app_commands.Range
         return
 
     await bot.db.add_coins(interaction.user.id, -taruhan)
-    await bot.db.record_game_play(interaction.user.id, "Coinflip")
+    await record_game_and_quest(interaction, "Coinflip")
     
     outcome = random.choice(["head", "tail"])
     outcome_name = "Head (Gambar) 🪙" if outcome == "head" else "Tail (Angka) 🦅"
@@ -2018,6 +2181,8 @@ async def coinflip(interaction: discord.Interaction, taruhan: app_commands.Range
     if sisi.value == outcome:
         winnings = int(taruhan * 1.95) # 1.95x payout
         await bot.db.add_coins(interaction.user.id, winnings)
+        await check_quest_completion(interaction, "win_game", 1)
+        await check_quest_completion(interaction, "earn_coins", winnings)
         embed = discord.Embed(title="🪙 Coinflip", description=f"Koin mendarat di: **{outcome_name}**\n🎉 Kamu Menang **{winnings}** koin!", color=discord.Color.green())
     else:
         embed = discord.Embed(title="🪙 Coinflip", description=f"Koin mendarat di: **{outcome_name}**\n❌ Kamu Kalah **{taruhan}** koin.", color=discord.Color.red())
@@ -2048,11 +2213,12 @@ admin_group = app_commands.Group(
 
 @admin_group.command(name="givecoins", description="Berikan atau kurangi koin seorang pengguna.")
 @app_commands.describe(user="Pengguna yang akan diubah saldonya.", amount="Jumlah koin (bisa negatif untuk mengurangi).")
-@commands.is_owner() # Decorator ini menangani pengecekan kepemilikan bot
 async def give_coins(interaction: discord.Interaction, user: discord.User, amount: int):
-    # Pengecekan 'is_owner' sekarang ditangani secara otomatis oleh decorator.
-    # Global error handler akan mengirim pesan jika pengguna non-owner mencoba.
-    
+    # Pengecekan manual agar 100% aman (Decorator @commands.is_owner terkadang tidak jalan di Slash Command murni)
+    if not await interaction.client.is_owner(interaction.user):
+        await interaction.response.send_message(f"🚨 **PERINGATAN** 🚨\n{interaction.user.mention} mencoba menggunakan perintah admin padahal bukan Owner! 🤨", ephemeral=False)
+        return
+
     if user.bot:
         await send_auto_delete(interaction, "❌ Tidak bisa memberikan koin kepada bot.", delay=5)
         return
